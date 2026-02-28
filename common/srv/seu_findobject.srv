@@ -1,0 +1,4 @@
+string object
+---
+bool state
+string errormsg

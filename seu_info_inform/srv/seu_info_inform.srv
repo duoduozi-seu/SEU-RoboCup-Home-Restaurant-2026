@@ -1,0 +1,5 @@
+string info_kind
+string ori_command
+---
+bool state
+string errormsg

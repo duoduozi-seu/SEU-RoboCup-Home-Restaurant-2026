@@ -1,0 +1,5 @@
+<launch>
+    <node pkg='seu_speech_recognition' name='seu_speech_recognition' type='run.sh' 
+          output='screen' args="$(find seu_speech_recognition)" respawn='true'>
+    </node>
+</launch>

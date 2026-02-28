@@ -1,0 +1,5 @@
+string feature
+string count
+---
+bool state
+string errormsg

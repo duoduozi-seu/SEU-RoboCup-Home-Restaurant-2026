@@ -1,0 +1,4 @@
+<launch>
+    <node pkg="seu_look_for_person" type="find_person_feature_strong.py" name="find_person_service" output="screen" />
+    <node pkg="seu_look_for_object" type="find_object.py" name="find_object_service" output="screen" />
+</launch>

@@ -1,0 +1,81 @@
+# =========================
+# Source-only Git Ignore
+# =========================
+
+# ROS / catkin workspace artifacts
+build/
+devel/
+install/
+logs/
+.catkin_tools/
+.catkin_workspace
+
+# IDE / editor
+.vscode/
+.idea/
+.VSCodeCounter/
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Runtime logs and temporary files
+**/*.log
+**/*.tmp
+**/*.temp
+*.swp
+*~
+
+# Runtime/output folders
+record/
+known_faces/
+**/known_faces/
+**/log_file/
+
+# Model weights / checkpoints / binaries
+**/*.pt
+**/*.pth
+**/*.onnx
+**/*.engine
+**/*.tflite
+**/*.h5
+**/*.ckpt
+**/*.bin
+
+# Audio / video / images / generated docs
+**/*.wav
+**/*.mp3
+**/*.flac
+**/*.ogg
+**/*.mp4
+**/*.avi
+**/*.jpg
+**/*.jpeg
+**/*.png
+**/*.bmp
+**/*.gif
+**/*.pdf
+
+# Archives
+**/*.zip
+**/*.tar
+**/*.gz
+**/*.7z
+
+# Compiled libraries / objects
+**/*.so
+**/*.so.*
+**/*.dll
+**/*.lib
+**/*.a
+**/*.o
+**/*.obj
+
+# Third-party binary bundles in dobot package
+/dobot/资料/
+/dobot/scripts/DobotDll*/
+/dobot/src/DobotDll*/

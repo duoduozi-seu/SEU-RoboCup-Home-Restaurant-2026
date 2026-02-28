@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>seu_gpsr</name>
+  <version>0.0.0</version>
+  <description>
+  ROS packages for the SEU@home GPSR (meta package)
+  </description>
+  <license>TODO</license>
+
+  <author email="hongzhi@todo.todo">hongzhi</author>
+  <author email="txy@todo.todo">txy</author>
+  <author email="hcz@todo.todo">hcz</author>
+  <author email="xxy@todo.todo">xxy</author>
+  <maintainer email="zzn@todo.todo">zzn</maintainer>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <exec_depend>seu_follow</exec_depend>
+  <exec_depend>seu_look_for_object</exec_depend>
+  <exec_depend>seu_look_for_person</exec_depend>
+  <exec_depend>seu_nav</exec_depend>
+  <exec_depend>seu_speech_recognition</exec_depend>
+  <exec_depend>seu_smach_main</exec_depend>
+  <exec_depend>seu_tracer_mini</exec_depend>
+  <exec_depend>seu_llm</exec_depend>
+  <exec_depend>seu_robot_msgs</exec_depend>
+  <export><metapackage/></export>
+</package>

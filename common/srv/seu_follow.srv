@@ -1,0 +1,5 @@
+string person
+string location
+---
+bool state
+string errormsg

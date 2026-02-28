@@ -1,0 +1,4 @@
+string des
+---
+bool state
+string errormsg
