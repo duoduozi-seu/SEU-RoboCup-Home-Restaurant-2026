@@ -20,7 +20,7 @@ class SimpleSpeechRecognizer:
                  model_name: str = "base",
                  language: str = "en"):
         # 自动选择设备
-        self.device = "cpu"
+        self.device = "cuda"
         self.language = language
         self.model_name = model_name
 
