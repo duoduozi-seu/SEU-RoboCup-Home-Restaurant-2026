@@ -1,4 +1,5 @@
 import os
+import sys
 import torch
 import whisper
 import pyaudio
@@ -6,11 +7,27 @@ import wave
 from typing import Optional
 from scipy.io import wavfile
 import numpy as np
+from contextlib import contextmanager
 import config
 
 # 定义音频文件路径
 AUDIO_OUTPUT_PATH = config.AUDIO_OUTPUT_PATH
 PROCESSED_AUDIO_PATH = config.PROCESSED_AUDIO_PATH
+
+
+@contextmanager
+def ignore_stderr():
+    """临时重定向 stderr 以消除 ALSA/PortAudio 的干扰信息"""
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    old_stderr = os.dup(2)
+    sys.stderr.flush()
+    os.dup2(devnull, 2)
+    os.close(devnull)
+    try:
+        yield
+    finally:
+        os.dup2(old_stderr, 2)
+        os.close(old_stderr)
 
 
 class SimpleSpeechRecognizer:
@@ -35,8 +52,10 @@ class SimpleSpeechRecognizer:
         """从麦克风录音并保存为 wav 文件"""
         print("开始录音...")
 
-        # 使用 pyaudio 进行录音
-        p = pyaudio.PyAudio()
+        # 使用 ignore_stderr 屏蔽 ALSA 报错提示
+        with ignore_stderr():
+            p = pyaudio.PyAudio()
+
         stream = p.open(format=pyaudio.paInt16,
                         channels=1,
                         rate=16000,
