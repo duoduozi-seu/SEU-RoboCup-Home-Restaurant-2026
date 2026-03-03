@@ -122,7 +122,7 @@ class AnswerState(smach.State):
             return 'failure'
 
     def answer(self,question):# 调用大模型服务解答问题
-        srv_name = "baidu_llm_service" # 当前服务的名称
+        srv_name = "gemini_llm_service" # 当前服务的名称
         client = rospy.ServiceProxy(srv_name, seu_llm)  # 当前操作的服务
         rospy.wait_for_service(srv_name)  # 等待服务
         rospy.loginfo(srv_name + ' available')
@@ -167,7 +167,7 @@ class InfoInformService:
         return f"Some known information as follows, today date is {self.today_date},current time is {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}，our team name is {self.team_name},team country is {self.team_country},team affiliation is {self.team_affiliation},the day pf the mounth is {self.day_of_month},the day of the week is {self.day_of_week},{self.other}"
 
     def inform(self,command):
-        srv_name = "baidu_llm_service"  # 当前服务的名称
+        srv_name = "gemini_llm_service"  # 当前服务的名称
         client = rospy.ServiceProxy(srv_name, seu_llm)  # 当前操作的服务
         rospy.wait_for_service(srv_name)  # 等待服务
         rospy.loginfo(srv_name + ' available')

@@ -15,12 +15,13 @@ from robot_msgs.msg import object_position
 from std_msgs.msg import String
 from geometry_msgs.msg import Twist
 from dobot.srv import dobot_control
-sys.path.append("/home/syw/code/robocup_nation/2024code/GPSR/src")
+# sys.path.append("/home/syw/code/robocup_nation/2024code/GPSR/src")
+sys.path.append("/home/duo/GPSR_ws_zyd/GPSR_code/src")
 from common.camera import Camera
 
 # 服务名称
 seuhome_speech_recognition_name = 'speech_recognition_service'
-seuhome_llm_name = 'baidu_llm_service'
+seuhome_llm_name = 'gemini_llm_service'
 seuhome_find_person_name = 'find_person_service'
 seuhome_find_object_name = 'find_object_service'
 seuhome_nav_name = 'nav_service'

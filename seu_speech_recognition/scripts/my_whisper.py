@@ -1,4 +1,4 @@
-#! /home/syw/anaconda3/envs/GPSR/bin/python
+#! /home/duo/anaconda3/envs/gpsr_whisper310/bin/python
 
 import os
 import rospy

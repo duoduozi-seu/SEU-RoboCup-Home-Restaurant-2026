@@ -9,7 +9,7 @@ from seu_llm.srv import *
 # 服务名称
 seuhome_llm_name = 'baidu_llm_service'
 # 注意替换路径
-plan_set_path = "/home/syw/code/robocup_nation/2024code/GPSR/src/seu_llm/scripts/plan_sets/plan_set_2025.json"
+plan_set_path = "/home/duo/GPSR_ws_zyd/GPSR_code/src/seu_llm/scripts/plan_sets/plan_set_2025.json"
 
 '''
     为了在程序中调用文心一言4.0大语言模型API，先在百度智能云创建API:KEY,替换下文'Authorization'即可
