@@ -21,6 +21,7 @@ AUDIO_OUTPUT_PATH = config.AUDIO_OUTPUT_PATH
 PROCESSED_AUDIO_PATH = config.PROCESSED_AUDIO_PATH
 # 需识别音频路径
 wav_path = config.AUDIO_OUTPUT_PATH
+_tts_engine = None
 
 @contextmanager
 def ignore_stderr():
@@ -43,14 +44,18 @@ def get_info(key):
         result = None
     return result
 
+def get_tts_engine():
+    global _tts_engine
+    if _tts_engine is None:
+        _tts_engine = pyttsx3.init()
+        voices = _tts_engine.getProperty('voices')
+        _tts_engine.setProperty('voice', voices[10].id)
+        _tts_engine.setProperty('rate', 160)
+    return _tts_engine
+
 def speech_to_text(data):
     # 初始化
-    speech=pyttsx3.init()
-    voices=speech.getProperty('voices')
-    # 音色
-    speech.setProperty('voice',voices[10].id)
-    # 频率
-    speech.setProperty('rate',160)
+    speech = get_tts_engine()
     # 播报
     speech.say(data)
     speech.runAndWait()

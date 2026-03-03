@@ -54,6 +54,7 @@ find_object_count = 0  # int: 找物计数器，典型值为 0~N，当前主流�
 speech_state = 'input'  # str: 语音状态，可能值 {'input', 'answer'}
 ori_command = ""  # str: 原始自然语言指令文本
 debug = True  # bool: 调试开关；True 时（除语音/LLM状态外）动作状态会直接返回 success
+_tts_engine = None  # pyttsx3.Engine | None: 复用 TTS 引擎，避免重复创建销毁
 
 
 def get_info(key):
@@ -909,6 +910,17 @@ class InfoInformState(smach.State):
             return False
 
 # 语音合成
+def get_tts_engine():
+    """获取全局 TTS 引擎（单例）。"""
+    global _tts_engine
+    if _tts_engine is None:
+        _tts_engine = pyttsx3.init()
+        voices = _tts_engine.getProperty('voices')
+        _tts_engine.setProperty('voice', voices[2].id)
+        _tts_engine.setProperty('rate', 140)
+    return _tts_engine
+
+
 def speech_to_text(data, log_file= None,speak = True):
     """语音播报并记录日志。
 
@@ -920,10 +932,7 @@ def speech_to_text(data, log_file= None,speak = True):
     try:
         if speak:
             # 语音合成
-            speech = pyttsx3.init()
-            voices = speech.getProperty('voices')
-            speech.setProperty('voice', voices[2].id)
-            speech.setProperty('rate', 140)
+            speech = get_tts_engine()
             speech.say(data)
             speech.runAndWait()
         if log_file is None:
