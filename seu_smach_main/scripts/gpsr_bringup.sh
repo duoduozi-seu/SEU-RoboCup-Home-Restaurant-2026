@@ -1,6 +1,6 @@
 #!/bin/bash
 
-gnome-terminal -- bash -c "roslaunch seu_smach_main init.launch; exec bash"
+gnome-terminal -- bash -c "LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6:/usr/lib/x86_64-linux-gnu/libtiff.so.5 roslaunch seu_smach_main init.launch; exec bash"
 
 echo “init.launch  successfully started”
 

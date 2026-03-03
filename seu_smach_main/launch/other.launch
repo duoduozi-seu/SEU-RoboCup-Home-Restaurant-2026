@@ -1,4 +1,4 @@
 <launch>
-    <node pkg="seu_speech_recognition" type="real_time_speech_topic.py" name="real_time_speech_recognition_topic" output="screen"/>
-    <node pkg="dobot" type="dobot_server.py" name="dobot_server" output="screen"/>
+    <!-- <node pkg="seu_speech_recognition" type="real_time_speech_topic.py" name="real_time_speech_recognition_topic" output="screen"/>
+    <node pkg="dobot" type="dobot_server.py" name="dobot_server" output="screen"/> -->
 </launch>

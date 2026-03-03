@@ -1,6 +1,7 @@
 #! /home/duo/anaconda3/envs/gpsr_whisper310/bin/python
 
 import os
+import sys
 import rospy
 import pyttsx3
 import torch
@@ -12,6 +13,7 @@ from scipy.io import wavfile
 import numpy as np
 from seu_speech_recognition.srv import *
 from datetime import datetime
+from contextlib import contextmanager
 import config
 # 定义音频文件路径
 # 定义音频文件路径
@@ -19,6 +21,20 @@ AUDIO_OUTPUT_PATH = config.AUDIO_OUTPUT_PATH
 PROCESSED_AUDIO_PATH = config.PROCESSED_AUDIO_PATH
 # 需识别音频路径
 wav_path = config.AUDIO_OUTPUT_PATH
+
+@contextmanager
+def ignore_stderr():
+    """临时重定向 stderr 以消除 ALSA/PortAudio 的干扰信息"""
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    old_stderr = os.dup(2)
+    sys.stderr.flush()
+    os.dup2(devnull, 2)
+    os.close(devnull)
+    try:
+        yield
+    finally:
+        os.dup2(old_stderr, 2)
+        os.close(old_stderr)
 
 def get_info(key):
     try:
@@ -80,7 +96,8 @@ class SimpleSpeechRecognizer:
         print("开始录音...")
 
         # 使用 pyaudio 进行录音
-        p = pyaudio.PyAudio()
+        with ignore_stderr():
+            p = pyaudio.PyAudio()
         stream = p.open(format=pyaudio.paInt16,
                         channels=1,
                         rate=16000,

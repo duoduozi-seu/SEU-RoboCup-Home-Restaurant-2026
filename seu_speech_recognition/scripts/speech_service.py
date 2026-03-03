@@ -1,6 +1,5 @@
-#!/usr/bin/env python
-# -*- coding:UTF-8 -*-
-
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 '''
 语音识别启动节点
 启动命令：

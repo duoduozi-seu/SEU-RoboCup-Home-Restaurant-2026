@@ -1,11 +1,11 @@
 <launch>
     <node pkg="seu_speech_recognition" type="speech_service.py" name="speech_recognition_service" output="screen"/>
     <node pkg="seu_llm" type="gemini_llm_service.py"  name="gemini_llm_service" output="screen" />
-    <node pkg="seu_nav" type="nav_service.py" name="nav_service" output="screen" />
+    <!-- <node pkg="seu_nav" type="nav_service.py" name="nav_service" output="screen" />
     <node pkg="seu_look_for_person" type="find_person_feature_strong_camera.py" name="find_person_camera" output="screen" />
     <node pkg="seu_person_analyse" type="person_analyse.py" name="person_analyse_service" output="screen" />
     <node pkg="seu_look_for_object" type="find_object_camera_2025.py" name="find_object_camera" output="screen" />
     <node pkg="seu_follow" type="follow_service.py" name="follow_service" output="screen" />
     <node pkg="seu_lead" type="lead_service.py" name="lead_service" output="screen" />
-    <node pkg="seu_info_inform" type="info_inform_service.py" name="info_inform_service" output="screen"/>
+    <node pkg="seu_info_inform" type="info_inform_service.py" name="info_inform_service" output="screen"/> -->
 </launch>
