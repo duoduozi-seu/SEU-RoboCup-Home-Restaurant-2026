@@ -1,0 +1,8 @@
+string text
+---
+bool state
+int64 errorcode
+float32 synth_time_sec
+float32 play_time_sec
+float32 total_time_sec
+string errormsg
