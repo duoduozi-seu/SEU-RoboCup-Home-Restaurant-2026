@@ -1,6 +1,13 @@
 <launch>
     <node pkg="seu_speech_recognition" type="speech_service.py" name="speech_recognition_service" output="screen"/>
     <node pkg="seu_llm" type="gemini_llm_service.py"  name="gemini_llm_service" output="screen" />
+    <node pkg="seu_voice" type="voice_service.py" name="voice_service_node" output="screen">
+      <param name="service_name" value="voice_service" />
+      <param name="model_path" value="$(find seu_voice)/models/en_US-lessac-medium.onnx" />
+      <param name="config_path" value="$(find seu_voice)/models/en_US-lessac-medium.onnx.json" />
+      <param name="player_cmd" value="aplay -q" />
+      <param name="tmp_dir" value="/tmp/seu_voice" />
+    </node>
     <!-- <node pkg="seu_nav" type="nav_service.py" name="nav_service" output="screen" />
     <node pkg="seu_look_for_person" type="find_person_feature_strong_camera.py" name="find_person_camera" output="screen" />
     <node pkg="seu_person_analyse" type="person_analyse.py" name="person_analyse_service" output="screen" />

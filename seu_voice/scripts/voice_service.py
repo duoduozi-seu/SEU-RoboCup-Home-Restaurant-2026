@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/duo/anaconda3/envs/gpsr_whisper310/bin/python
 import os
 import shlex
 import subprocess

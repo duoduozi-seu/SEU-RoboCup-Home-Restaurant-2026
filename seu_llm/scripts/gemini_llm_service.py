@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/duo/anaconda3/envs/gpsr_whisper310/bin/python
 # -*- coding: UTF-8 -*-
 """
 Gemini 版本的 ROS LLM 服务。

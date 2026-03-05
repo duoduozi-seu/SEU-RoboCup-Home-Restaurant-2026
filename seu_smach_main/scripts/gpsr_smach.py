@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/duo/anaconda3/envs/gpsr_perception310/bin/python
 """GPSR 任务状态机主脚本。
 
 该脚本整体流程：
@@ -16,13 +16,13 @@ import smach_ros
 
 from seu_smach_main.srv import *
 import sys
-import pyttsx3
 import time
 from fpdf import FPDF
 from robot_msgs.msg import object_position
 from std_msgs.msg import String
 from geometry_msgs.msg import Twist
 from dobot.srv import dobot_control
+from seu_voice.srv import seu_voice as seu_voice_srv, seu_voiceRequest
 
 sys.path.append("/home/duo/GPSR_ws_zyd/GPSR_code/src")
 from common.camera import Camera
@@ -45,6 +45,7 @@ seuhome_find_object_name = 'find_object_service'  # str: 找物服务名
 seuhome_nav_name = 'nav_service'  # str: 导航服务名
 seuhome_follow_name = 'follow_service'  # str: 跟随服务名
 seuhome_grasp_name = "dobot_server"  # str: 机械臂抓取服务名（当前脚本中未直接使用）
+seuhome_voice_name = "voice_service"  # str: 语音合成服务名（基于 seu_voice）
 
 # ==============================
 # 全局运行态变量（状态机会在多个状态间共享）
@@ -54,7 +55,13 @@ find_object_count = 0  # int: 找物计数器，典型值为 0~N，当前主流�
 speech_state = 'input'  # str: 语音状态，可能值 {'input', 'answer'}
 ori_command = ""  # str: 原始自然语言指令文本
 debug = True  # bool: 调试开关；True 时（除语音/LLM状态外）动作状态会直接返回 success
-_tts_engine = None  # pyttsx3.Engine | None: 复用 TTS 引擎，避免重复创建销毁
+_voice_client = None  # rospy.ServiceProxy | None: voice_service 客户端单例
+
+# 语音服务 busy 重试策略：每 1s 查询一次，最多查询 5 次（共等待 5s）。
+VOICE_BUSY_ERROR_CODE = 1002
+VOICE_BUSY_QUERY_INTERVAL_SEC = 1.0
+VOICE_BUSY_MAX_QUERY_COUNT = 5
+PKG_NAME_SMACH = "seu_smach_main"
 
 
 def get_info(key):
@@ -909,16 +916,81 @@ class InfoInformState(smach.State):
             print("Service call Failed: " + srv_name + ": %s" % e)
             return False
 
-# 语音合成
-def get_tts_engine():
-    """获取全局 TTS 引擎（单例）。"""
-    global _tts_engine
-    if _tts_engine is None:
-        _tts_engine = pyttsx3.init()
-        voices = _tts_engine.getProperty('voices')
-        _tts_engine.setProperty('voice', voices[2].id)
-        _tts_engine.setProperty('rate', 140)
-    return _tts_engine
+def _print_voice_busy_skip(pkg_name):
+    """按需求输出红色 busy 提示，提示后续逻辑继续执行。"""
+    msg = f"[{pkg_name}]：voice service busy，skip speech。"
+    sys.stderr.write(f"\033[31m{msg}\033[0m\n")
+    sys.stderr.flush()
+
+
+def _get_voice_client():
+    """获取 voice_service 的单例客户端，减少重复创建开销。"""
+    global _voice_client
+    if _voice_client is None:
+        _voice_client = rospy.ServiceProxy(seuhome_voice_name, seu_voice_srv)
+    return _voice_client
+
+
+def _call_voice_service_blocking(text):
+    """调用 voice_service 进行阻塞播报，并处理 busy 轮询逻辑。
+
+    规则：
+    1. 正常返回 `state=True` 即表示“播报已结束”；
+    2. 若返回 busy（errorcode=1002），则每 1s 重试一次，最多 5 次；
+    3. 若 5 次后仍 busy，打印红色提示并跳过语音；
+    4. 其他错误直接记录日志并返回失败。
+    """
+    if text is None:
+        return False
+    text = str(text).strip()
+    if not text:
+        return False
+
+    client = _get_voice_client()
+    req = seu_voiceRequest(text=text)
+
+    try:
+        # 为避免节点永久卡死，等待服务时设置超时；超时后跳过语音。
+        rospy.wait_for_service(seuhome_voice_name, timeout=1.0)
+    except rospy.ROSException as e:
+        rospy.logerr("voice service unavailable: %s", e)
+        return False
+
+    def _call_once():
+        try:
+            return client.call(req)
+        except rospy.ServiceException as call_error:
+            rospy.logerr("voice service call failed: %s", call_error)
+            return None
+
+    # 第一次调用：正常情况下会阻塞直到播报结束。
+    response = _call_once()
+    if response is None:
+        return False
+    if response.state:
+        return True
+
+    # 非 busy 错误：直接失败。
+    if response.errorcode != VOICE_BUSY_ERROR_CODE:
+        rospy.logerr("voice service failed: errorcode=%s, errormsg=%s",
+                     response.errorcode, response.errormsg)
+        return False
+
+    # busy：按要求每 1s 查询一次，最多 5 次。
+    for _ in range(VOICE_BUSY_MAX_QUERY_COUNT):
+        rospy.sleep(VOICE_BUSY_QUERY_INTERVAL_SEC)
+        response = _call_once()
+        if response is None:
+            return False
+        if response.state:
+            return True
+        if response.errorcode != VOICE_BUSY_ERROR_CODE:
+            rospy.logerr("voice service failed after busy retry: errorcode=%s, errormsg=%s",
+                         response.errorcode, response.errormsg)
+            return False
+
+    _print_voice_busy_skip(PKG_NAME_SMACH)
+    return False
 
 
 def speech_to_text(data, log_file= None,speak = True):
@@ -931,12 +1003,12 @@ def speech_to_text(data, log_file= None,speak = True):
     """
     try:
         if speak:
-            # 语音合成
-            speech = get_tts_engine()
-            speech.say(data)
-            speech.runAndWait()
+            # 通过 voice_service 阻塞播报；若失败（含 busy 超时）则按策略跳过。
+            _call_voice_service_blocking(data)
         if log_file is None:
             log_file = get_info('log')  # str | None: 例如 `/.../record/2026-03-03 18:00:01`
+        if not log_file:
+            return
         # 获取当前时间戳
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
