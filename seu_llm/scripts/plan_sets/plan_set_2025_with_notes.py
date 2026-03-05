@@ -77,7 +77,7 @@ action_dict = {
 json_data = json.dumps(action_dict, indent=4, ensure_ascii=False)
 
 # 将JSON数据保存到文件
-with open('/home/syw/code/robocup_nation/2024code/GPSR/src/seu_llm/scripts/plan_sets/plan_set_2025.json', 'w', encoding='utf-8') as file:
+with open('/home/duo/GPSR_ws_zyd/GPSR_code/src/seu_llm/scripts/plan_sets/plan_set_2025.json', 'w', encoding='utf-8') as file:
     json.dump(action_dict, file, indent=4, ensure_ascii=False)
 
 print("JSON数据已成功保存到 action_commands.json")
