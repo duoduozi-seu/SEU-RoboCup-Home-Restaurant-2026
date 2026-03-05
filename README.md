@@ -1,61 +1,125 @@
-简介：
-    这是东南大学robocup校队@home组关于Robocup世界杯中国赛GPSR题目的源代码，由校队成员zzn，hongzhi，txy以及hcz、xxy合作编写。本功能包在ubuntu20.04与ros noetic环境下开发完成
-文件组成：
-    seu_gpsr:元功能包文件，无实际作用
-    seu_smach_main:赛题主程序功能包，负责整个赛题流程，采用smach状态机编写
-    seu_llm:大语言模型解析模块，基于百度文心一言4.0大语言模型，作为核心指令解析器，负责解析指令以及回答常见问题，在线
-    seu_follow:跟随模块,基于mediapipe人体骨骼模型与手势模型，离线
-    seu_look_for_object:寻找物体模块，基于yolov7物品识别模型，离线
-    seu_look_for_person:寻找人模块，基于face_recognition(找人)、deepface(判断性别)、mediapipe(判断人体姿态)，离线
-    seu_nav:导航模块，基于move_base，离线
-    seu_speech_recognition:语音识别模块，基于百度语音识别技术，在线
-    seu_robot_msgs:存放自定义消息
-    seu_tracer_mini:存放松灵底盘的一些urdf文件，便于在分布式通信时在上位机能够查看
-环境安装教程：
-    1. 修改conda.yml最后一行虚拟环境路径，修改为目标anaconda的envs下就行
-    2. 用如下命令创建新conda环境：
-        conda env create -f  conda.yml
-        此时会将yml中conda库进行安装,自测pip包安装时间过长，所以在第三步单独安装pip的包。
-    3. 激活已创建的虚拟环境并安装pip的依赖包
-        conda activate GPSR
-        pip3 install torch==1.8.2 torchvision==0.9.2 torchaudio==0.8.2 --extra-index-url https://download.pytorch.org/whl/lts/1.8/cu111
-        pip install -r pip_new.txt
-使用方法：
-    1.与控制底盘的jetson nano配置分布式通信：通过网线链接nano与笔记本电脑，将ipv4设为 与其他计算机共享。其余配置分布式通信教程可见如下链接：http://www.autolabor.com.cn/book/ROSTutorials/5/44-rosfen-bu-shi-tong-xin.html
-    2.启动主机（笔记本）roscore
-    3.采用ssh与nano建立远程连接：
-        # user: robocup@10.42.0.169
-        # password: seu2022
+# 2026 SEU RoboCup@Home GPSR Code
 
-        # 生成密钥
-        ssh-keygen
-        # 上传公钥
-        ssh-copy-id robocup@10.42.0.169
-        # 连接nano并初始化环境 10.42.0.169
-        ssh -X robocup@10.42.0.169
-        cd tracer_ws
-        catkin_make
-        source devel/setup.bash 
-        # 首次上电需执行，给雷达赋予权限
-        sudo modprobe gs_usb 
-        sudo ip link set can0 up type can bitrate 500000
-        sudo chmod 777 /dev/ttyACM0  
-    4.完成连接后，启动底盘
-        # 启动底盘
-        roslaunch tracer_bringup tracer_robot_base.launch
-    5.另开一终端，重复连接nano并初始化环境 10.42.0.169，启动导航
-        # 启动导航
-        roslaunch tracer_bringup tidy_up_nav.launch
-    6.进入/seu_smach_main/scripts路径后，使用脚本开启各基元模块服务：
-        ./gpsr_bringup.sh
-    7.启动主程序，新开一个终端，运行如下命令:
-        rosrun seu_smach_main gpsr_smach.py
-    8.观测状态机运行情况可运行如下命令：（需要先退出anaconda环境）
-        conda deactivate
-        rosrun smach_viewer smach_viewer.py 
-视频demo：
-    https://www.bilibili.com/video/BV1sN4y167kd/?share_source=copy_web&vd_source=f6674897b2b4292acafc8309d6808afd
-注意事项：
-    1. 每个功能模块都有各自的readme，使用前请耐心阅读
-    2. 代码中有一些路径采用绝对路径，均已在代码开头处声明，请自行更换
-    3. 一些功能模块需使用虚拟环境GPSR运行，请自行修改代码第一行的编译器路径
+东南大学自动化学院 RoboCup@Home GPSR 赛题代码（2026 版）
+
+<!-- <div align="center">
+  <span style="font-family: 'Times New Roman', 'SimSun', serif; font-size: 20px;">周艺舵</span><br/>
+  <span style="font-family: 'Times New Roman', 'SimSun', serif; font-size: 16px;">东南大学自动化学院 (School of Automation, Southeast University)</span>
+</div>
+
+**Environment**
+
+- Ubuntu 20.04
+- ROS Noetic
+- Python 3.10 -->
+
+- 代码作者：东南大学自动化学院 周艺舵
+- 开发基础环境：Ubuntu 20.04 + ROS Noetic
+
+## 工作空间构建
+
+```bash
+cd ~/GPSR_ws_zyd/GPSR_code
+catkin_make
+source devel/setup.bash
+```
+
+## 模块 1：`seu_voice`（离线语音合成，Piper）
+
+### 环境配置
+
+```bash
+# 建议在项目使用的 Python/Conda 环境中执行
+python3 -m pip install -U pip
+python3 -m pip install piper-tts
+
+sudo apt-get update
+sudo apt-get install -y alsa-utils
+```
+
+模型文件需存在于：
+
+- `src/seu_voice/models/en_US-lessac-medium.onnx`
+- `src/seu_voice/models/en_US-lessac-medium.onnx.json`
+
+### 启动与测试
+
+```bash
+source ~/GPSR_ws_zyd/GPSR_code/devel/setup.bash
+roslaunch seu_voice voice_service.launch
+```
+
+另开终端测试：
+
+```bash
+source ~/GPSR_ws_zyd/GPSR_code/devel/setup.bash
+rosservice call /voice_service "text: 'hello, i am ready'"
+```
+
+## 模块 2：`seu_speech_recognition`（Whisper 语音识别）
+
+### 环境配置
+
+已用 `conda list` + 环境内 `pip list` 核实当前可用环境为 `gpsr_whisper310`（Python 3.10.19）。
+
+```bash
+# 核对命令
+conda activate gpsr_whisper310
+conda list | egrep "python|faster-whisper|ctranslate2|openai-whisper|torch|pyaudio|scipy|numpy"
+pip list   | egrep "faster-whisper|ctranslate2|openai-whisper|torch|PyAudio|scipy|numpy"
+```
+
+当前环境关键版本（实测）：
+
+- `python`: `3.10.19`
+- `faster-whisper`: `1.2.1`
+- `ctranslate2`: `4.7.1`
+- `openai-whisper`: `20250625`
+- `torch/torchaudio/torchvision`: `2.4.0+cu121 / 2.4.0+cu121 / 0.19.0+cu121`
+- `PyAudio`: `0.2.14`
+- `scipy`: `1.15.3`
+- `numpy`: `2.2.6`
+
+如需按当前环境重装关键依赖：
+
+```bash
+conda activate gpsr_whisper310
+python3 -m pip install -U pip
+python3 -m pip install \
+  faster-whisper==1.2.1 ctranslate2==4.7.1 \
+  openai-whisper==20250625 \
+  PyAudio==0.2.14 scipy==1.15.3 numpy==2.2.6
+```
+
+模型默认路径（见 `scripts/config.py`）：
+
+- `src/seu_speech_recognition/scripts/large-v3-turbo.pt`
+
+该模块会调用 `voice_service` 进行提示音播报，建议先启动 `seu_voice`。
+
+### 启动与测试
+
+```bash
+source ~/GPSR_ws_zyd/GPSR_code/devel/setup.bash
+rosrun seu_speech_recognition speech_service.py
+```
+
+另开终端测试：
+
+```bash
+source ~/GPSR_ws_zyd/GPSR_code/devel/setup.bash
+rosservice call /speech_recognition_service "enable: false
+task: 'command'"
+```
+
+参数说明：
+
+- `enable`：当前代码中为保留字段，`true/false` 目前均不改变识别流程。
+- `task`：用于提示语选择，`command` 会播报 `please say the command`，`answer` 会播报 `please ask the question`。
+
+## 当前代码说明（与旧版对比）
+
+- `seu_voice` 已切换为 Piper TTS 服务，阻塞式返回，含 busy/errorcode 机制。
+- `seu_speech_recognition` 当前运行环境为 Python 3.10 + faster-whisper（环境已就绪）。
+- 当前仓库 `my_whisper.py` 代码仍为 `openai-whisper` 调用接口（录音-识别），并与 `seu_voice` 服务联动。
+- `seu_speech_recognition/launch/run.launch` 仍引用 `run.sh`，但仓库中无该文件；请按上面的 `rosrun` 命令启动。
