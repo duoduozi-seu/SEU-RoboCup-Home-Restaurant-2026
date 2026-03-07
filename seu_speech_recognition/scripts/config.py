@@ -44,7 +44,7 @@ PROCESSED_AUDIO_PATH = "denoised_audio.wav"
 # ------------------------------------------------------------------------------
 
 # 1. Whisper 模型路径
-#    文件: my_whisper.py (类初始化参数: model_name)
-#    文件: speech_recogition.py (main 函数参数: model_name)
-#    作用: 指定 Whisper 加载的本地模型文件 (.pt)
-MODEL_PATH = os.path.join(SCRIPTS_DIR, "large-v3-turbo.pt")
+#    faster-whisper 推荐填模型目录（snapshot_download / hf download 的目标目录）
+#    当前指向：~/GPSR_ws_zyd/models/faster-whisper-large-v3
+# MODEL_PATH = "/home/duo/GPSR_ws_zyd/models/faster-whisper-large-v3"
+MODEL_PATH = "/home/duo/GPSR_ws_zyd/GPSR_code/src/seu_speech_recognition/scripts/large-v3-turbo.pt"

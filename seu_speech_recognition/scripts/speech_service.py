@@ -9,13 +9,14 @@
 '''
 import rospy 
 from seu_speech_recognition.srv import *
+# from faster_whisper_service import recognizer
 from my_whisper import recognizer
 
 def main():
-    # 注册语音识别服务：识别逻辑在 my_whisper.recognizer.recognition 中实现。
+    # 注册语音识别服务：识别逻辑在 faster_whisper_service.recognizer.recognition 中实现。
     rospy.init_node('speech_recognition_node')
     s = rospy.Service('speech_recognition_service', seu_speech_recognition, recognizer.recognition)
-    rospy.loginfo("Ready to recognize speech (Whisper)")
+    rospy.loginfo("Ready to recognize speech (faster-whisper)")
     rospy.spin()
 
 if __name__ == '__main__':
