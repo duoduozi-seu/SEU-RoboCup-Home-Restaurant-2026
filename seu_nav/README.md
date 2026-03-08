@@ -1,32 +1,192 @@
-# Nav Service Package
+# seu_nav —— SEU 导航服务包 (2026版)
 
-## Overview
+## 概述
 
-这是一个ROS功能包，用于实现导航服务的封装，自定义服务消息seu_nav.srv，编写服务脚本nav_service.py。
+`seu_nav` 是 GPSR 项目的导航服务封装包。它对外提供一个 ROS Service (`nav_service`)，上层状态机只需传入**目标地点名称**（字符串），即可完成导航。
 
-## Basic Usage
+内部实现上，`seu_nav` 通过 `actionlib` 连接 `catkin_robocup_2` 工作空间中的 `task_nav` Action Server，由其控制 `move_base` 执行实际路径规划与运动。
 
-在启动底盘launch文件后，要启动该服务，运行如下命令：
+---
 
-    rosrun seu_nav nav_service.py
+## 1. 前置条件：启动 catkin_robocup_2 导航系统
 
-要在终端中测试该服务的调用，请运行：
+`seu_nav` 依赖 `catkin_robocup_2` 提供的导航底层。在运行 `seu_nav` 之前，**必须先在 `catkin_robocup_2` 工作空间中启动导航**。
 
-    rosservice call /nav_service "{des}"
+### 1.1 启动全套导航（底盘 + 定位 + move_base）
 
-## Node: nav_service_node
+```bash
+# 终端 1：source catkin_robocup_2 工作空间
+source /home/duo/GPSR_ws_zyd/catkin_robocup_2/devel/setup.bash
 
-这是一个导航服务节点，它接收用户提供的目的地名称，调用导航功能，控制机器人前往目标位姿，返回导航结果及错误码（未使用）。
-目的地名称与坐标的对应关系需在 nav_service.py 中提前定义
+# 启动导航（包含底盘驱动、激光定位、move_base）
+roslaunch tracer_nav nav_all.launch
+```
 
-### Subscribed Topics
+> **参数说明：**
+> - `local_planner` (默认 `true`)：`true` 使用 TEB 局部规划器，`false` 使用 DWA
+> - `map_pcd`：PCD 点云地图路径（用于 fast_lio 定位）
+> - `map_yaml`：2D 栅格地图路径（用于 move_base 代价地图）
 
-* **`/move_base`** ([geometry_msgs/Pose])
+### 1.2 启动 task_nav Action Server
 
-    向move_base话题的MoveBaseAction发布目标点位姿Pose实现导航。
+`nav_all.launch` **不会**自动启动 `task_nav_server`，需要手动启动：
 
-### Services
+```bash
+# 终端 2（同一工作空间 source 后）
+rosrun tracer_nav task_nav_server.py
+```
 
-* **`nav_service`** ([seu_nav_srv/string])
+> 或者也可以使用 `nav_with_waypoints.launch` 一键启动（该 launch 会同时启动 nav_all + task_nav_server + 交互测试节点）：
+> ```bash
+> roslaunch tracer_nav nav_with_waypoints.launch
+> ```
 
-    该服务接收目的地名称，调用导航功能，返回导航结果及错误码。
+---
+
+## 2. 启动 seu_nav 导航服务
+
+```bash
+# 终端 3：source GPSR_code 工作空间
+source /home/duo/GPSR_ws_zyd/GPSR_code/devel/setup.bash
+
+# 启动导航服务（使用默认航点文件）
+rosrun seu_nav nav_service.py
+
+# 或指定自定义航点文件
+rosrun seu_nav nav_service.py _waypoints_file:=/path/to/your/waypoints.yaml
+
+# 或指定导航超时时间（默认 120 秒）
+rosrun seu_nav nav_service.py _timeout:=180
+```
+
+### ROS 参数
+
+| 参数名 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `~waypoints_file` | string | `<包路径>/config/waypoints.yaml` | 航点 YAML 文件路径 |
+| `~timeout` | int | `120` | 单次导航超时时间（秒） |
+
+---
+
+## 3. 服务接口说明
+
+### 服务名称
+
+`nav_service`
+
+### 服务类型
+
+`seu_nav/seu_nav`
+
+### 输入 (Request)
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `des` | `string` | 目标地点名称，如 `"kitchen"`、`"living room"`、`"living_room"` |
+
+> **名称匹配规则：** 输入会自动转为小写，下划线 `_` 和空格 ` ` 视为等价。  
+> 例如 `"Living_Room"`、`"living room"`、`"living_room"` 均能匹配航点 `living_room`。
+
+### 输出 (Response)
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `state` | `bool` | 导航是否成功。`True` = 到达目标，`False` = 失败 |
+| `errormsg` | `string` | 错误信息。成功时为空字符串，失败时包含具体原因 |
+
+### 可能的错误信息
+
+| errormsg | 含义 |
+|----------|------|
+| `未知地点: "xxx"，可用地点: [...]` | 请求的地点名称在航点 YAML 中不存在 |
+| `task_nav Action Server 不可用` | task_nav_server 未启动或连接超时 |
+| `导航超时 (120s)` | 导航未在超时时间内完成 |
+| `导航失败 (ActionState=N)` | move_base 导航失败（如路径不可达） |
+
+### 终端测试
+
+```bash
+# 导航到 kitchen
+rosservice call /nav_service "{des: 'kitchen'}"
+
+# 导航到 living room（空格形式）
+rosservice call /nav_service "{des: 'living room'}"
+```
+
+---
+
+## 4. 航点配置文件 (waypoints.yaml)
+
+航点文件位于 `config/waypoints.yaml`，格式如下：
+
+```yaml
+waypoints:
+  kitchen:
+    position:
+      x: -1.0
+      y: 3.0
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.707
+      w: 0.707
+```
+
+### 如何获取航点坐标
+
+1. 启动导航系统，在 RViz 中将机器人移动到目标位置
+2. 终端执行以下命令获取当前位姿：
+   ```bash
+   rostopic echo -n 1 /localization
+   ```
+3. 将输出的 `position` 和 `orientation` 填入 YAML 文件
+
+---
+
+## 5. 系统架构
+
+```
+┌─────────────────────────────────────────────────────┐
+│  gpsr_smach.py (GPSR 状态机)                          │
+│  调用 rosservice call /nav_service "{des: 'xxx'}"    │
+└────────────────────┬────────────────────────────────┘
+                     │ ROS Service
+                     ▼
+┌─────────────────────────────────────────────────────┐
+│  seu_nav / nav_service.py                            │
+│  - 从 YAML 加载航点                                   │
+│  - 地点名称 → PoseStamped                             │
+│  - 通过 ActionLib 发送 TaskNavGoal                    │
+└────────────────────┬────────────────────────────────┘
+                     │ ActionLib (task_nav)
+                     ▼
+┌─────────────────────────────────────────────────────┐
+│  tracer_nav / task_nav_server.py  (catkin_robocup_2) │
+│  - 接收 TaskNavGoal                                   │
+│  - 转发至 move_base                                   │
+└────────────────────┬────────────────────────────────┘
+                     │ ActionLib (move_base)
+                     ▼
+┌─────────────────────────────────────────────────────┐
+│  move_base (ROS Navigation Stack)                    │
+│  - 全局规划 + 局部规划 + 底盘控制                       │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## 6. 文件结构
+
+```
+seu_nav/
+├── CMakeLists.txt          # 构建配置
+├── package.xml             # 包依赖声明
+├── README.md               # 本文档
+├── config/
+│   └── waypoints.yaml      # 航点配置文件（需根据实际场地标定）
+├── scripts/
+│   └── nav_service.py      # 导航服务节点（核心代码）
+└── srv/
+    └── seu_nav.srv          # 服务消息定义 (string des → bool state + string errormsg)
+```

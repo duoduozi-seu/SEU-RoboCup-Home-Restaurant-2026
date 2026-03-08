@@ -1,0 +1,60 @@
+# ==============================================================
+# seu_nav 航点配置文件 (适配 tracer_nav 双位姿格式)
+# ==============================================================
+# 格式说明：
+#   每个航点包含一个名称（键）和两个 6DOF 位姿 (nav_pose, pid_pose)。
+#   - nav_pose: 导航目标位姿（粗定位）
+#   - pid_pose: 视觉/PID对接目标位姿（精确定位/对接端点）
+#
+#   每个位姿组均包含：
+#   - position: 地图坐标系下的 (x, y, z) 位置（米）
+#   - orientation: 四元数 (x, y, z, w) 表示的朝向
+#
+# 获取航点坐标的方法：
+#   1. 启动导航系统后，在 RViz 中将机器人移动到目标位置
+#   2. 执行以下命令获取当前位姿：
+#      rostopic echo -n 1 /localization
+#   3. 将输出的 position 和 orientation 填入此文件并调整
+# ==============================================================
+
+waypoints:
+  # -------- 示例航点（请根据实际场地标定替换） --------
+  start_point:
+    nav_pose:
+      position: {x: 0.0, y: 0.0, z: 0.0}
+      orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+    pid_pose:
+      position: {x: 0.0, y: 0.0, z: 0.0}
+      orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+
+  entrance:
+    nav_pose:
+      position: {x: 2.0, y: 1.0, z: 0.0}
+      orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+    pid_pose:
+      position: {x: 2.0, y: 1.0, z: 0.0}
+      orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+
+  living_room:
+    nav_pose:
+      position: {x: 3.0, y: 2.0, z: 0.0}
+      orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+    pid_pose:
+      position: {x: 3.0, y: 2.0, z: 0.0}
+      orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+
+  kitchen:
+    nav_pose:
+      position: {x: -1.0, y: 3.0, z: 0.0}
+      orientation: {x: 0.0, y: 0.0, z: 0.707, w: 0.707}
+    pid_pose:
+      position: {x: -1.0, y: 3.0, z: 0.0}
+      orientation: {x: 0.0, y: 0.0, z: 0.707, w: 0.707}
+
+  bedroom:
+    nav_pose:
+      position: {x: 5.0, y: -1.0, z: 0.0}
+      orientation: {x: 0.0, y: 0.0, z: 1.0, w: 0.0}
+    pid_pose:
+      position: {x: 5.0, y: -1.0, z: 0.0}
+      orientation: {x: 0.0, y: 0.0, z: 1.0, w: 0.0}
