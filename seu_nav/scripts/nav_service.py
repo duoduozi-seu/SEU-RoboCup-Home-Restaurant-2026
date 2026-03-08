@@ -56,8 +56,9 @@ class NavServiceNode:
         # --------------------------------------------------
         # 1. 加载航点 YAML 文件
         # --------------------------------------------------
-        # 使用常量中的硬编码路径加载配置
-        self.waypoints = self._load_waypoints(WAYPOINTS_YAML_PATH)
+        # 使用与作者 waypoint_navigator 对齐的方式加载数据
+        # self.waypoints_data 将直接存储 yaml 的原始数据结构
+        self.waypoints_data = self._load_waypoints(WAYPOINTS_YAML_PATH)
 
         # 导航超时时间（秒），可通过 ~timeout 参数配置
         self.timeout = rospy.get_param('~timeout', DEFAULT_TIMEOUT_SEC)
@@ -83,57 +84,38 @@ class NavServiceNode:
         # --------------------------------------------------
         self.service = rospy.Service(SERVICE_NAME, seu_nav, self._handle_nav)
         rospy.loginfo('[seu_nav] 导航服务已就绪: %s', SERVICE_NAME)
-        rospy.loginfo('[seu_nav] 已加载 %d 个航点: %s',
-                      len(self.waypoints), list(self.waypoints.keys()))
+        
+        available_names = list(self.waypoints_data.get('waypoints', {}).keys())
+        rospy.loginfo('[seu_nav] 已加载 %d 个航点: %s', len(available_names), available_names)
 
     # ========================================================
     # 航点加载
     # ========================================================
     def _load_waypoints(self, yaml_path):
-        """从 YAML 文件加载航点字典。
+        """完全对齐作者 waypoint_navigator.py 的读取方法。
 
-        YAML 格式示例（适配 tracer_nav 双位姿）：
-            waypoints:
-              living_room:
-                nav_pose:
-                  position:  {x: 1.0, y: 2.0, z: 0.0}
-                  orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
-                pid_pose:
-                  position:  {x: 1.0, y: 2.0, z: 0.0}
-                  orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+        直接 safe_load 整个 YAML 文件，不改变其原始结构。这保证了
+        以后直接替换 YAML 文件时 "到手即用"。
 
         Args:
             yaml_path (str): YAML 文件的绝对路径。
 
         Returns:
-            dict: 键为航点名称（全小写，空格分隔），值为坐标字典。
+            dict: 原始的 YAML 字典数据。
         """
-        if not os.path.exists(yaml_path):
-            rospy.logwarn('[seu_nav] 航点文件不存在: %s，将使用空航点表', yaml_path)
-            return {}
-
-        try:
-            with open(yaml_path, 'r') as f:
-                data = yaml.safe_load(f)
-        except Exception as e:
-            rospy.logerr('[seu_nav] 读取航点文件失败: %s', e)
-            return {}
-
-        if not data or 'waypoints' not in data:
-            rospy.logwarn('[seu_nav] 航点文件格式错误，缺少 "waypoints" 键')
-            return {}
-
-        # 将航点名称统一转为小写、下划线替换为空格，方便匹配
-        raw = data['waypoints']
-        waypoints = {}
-        for name, coords in raw.items():
-            normalized = name.lower().replace('_', ' ')
-            waypoints[normalized] = coords
-            # 同时保留原始名称（小写）作为别名，确保两种写法都能匹配
-            lower_name = name.lower()
-            if lower_name != normalized:
-                waypoints[lower_name] = coords
-        return waypoints
+        waypoints_data = {'waypoints': {}}
+        if os.path.exists(yaml_path):
+            try:
+                with open(yaml_path, 'r') as f:
+                    data = yaml.safe_load(f)
+                    if data and 'waypoints' in data:
+                        waypoints_data = data
+            except Exception as e:
+                rospy.logerr('[seu_nav] 读取航点文件失败: %s', e)
+        else:
+            rospy.logwarn('[seu_nav] 航点文件不存在: %s', yaml_path)
+            
+        return waypoints_data
 
     # ========================================================
     # 服务回调
@@ -155,23 +137,35 @@ class NavServiceNode:
         """
         response = seu_navResponse()
 
-        # --- 1. 地点名称标准化 ---
-        location = req.des.lower().replace('_', ' ').strip()
-        rospy.loginfo('[seu_nav] 收到导航请求: "%s"', location)
+        # --- 1. 尝试查找航点 (直接提取 或 兼容匹配) ---
+        req_location = req.des.strip()
+        rospy.loginfo('[seu_nav] 收到导航请求: "%s"', req_location)
+        
+        waypoints_dict = self.waypoints_data.get('waypoints', {})
+        
+        # 首选：与 YAML 文件中键名完全一致
+        wp = waypoints_dict.get(req_location)
+        matched_name = req_location
+        
+        # 兼容性寻找：忽略大小写、以及下划线和空格的差别
+        if not wp:
+            normalized_req = req_location.lower().replace('_', ' ')
+            for key, val in waypoints_dict.items():
+                if key.lower().replace('_', ' ') == normalized_req:
+                    wp = val
+                    matched_name = key
+                    break
 
-        # --- 2. 查找航点 ---
-        if location not in self.waypoints:
-            err = '未知地点: "{}"，可用地点: {}'.format(
-                location, list(self.waypoints.keys())
+        if not wp:
+            err = '未知地点: "{}"，目前 YAML 文件中的可用地点有: {}'.format(
+                req_location, list(waypoints_dict.keys())
             )
             rospy.logerr('[seu_nav] %s', err)
             response.state = False
             response.errormsg = err
             return response
 
-        wp = self.waypoints[location]
-
-        # --- 3. 构造导航目标 ---
+        # --- 2. 构造导航目标 (按照 waypoint_navigator 的写法) ---
         goal = TaskNavGoal()
         
         # 1) 构造 nav_pose
@@ -179,40 +173,33 @@ class NavServiceNode:
         nav_p.header.frame_id = 'map'
         nav_p.header.stamp = rospy.Time.now()
         
-        nwp = wp.get('nav_pose', wp)  # 回退到直接取wp，兼容旧有格式
-        npos = nwp.get('position', {'x':0, 'y':0, 'z':0})
-        nori = nwp.get('orientation', {'x':0, 'y':0, 'z':0, 'w':1})
-        
-        nav_p.pose.position.x = npos.get('x', 0.0)
-        nav_p.pose.position.y = npos.get('y', 0.0)
-        nav_p.pose.position.z = npos.get('z', 0.0)
-        nav_p.pose.orientation.x = nori.get('x', 0.0)
-        nav_p.pose.orientation.y = nori.get('y', 0.0)
-        nav_p.pose.orientation.z = nori.get('z', 0.0)
-        nav_p.pose.orientation.w = nori.get('w', 1.0)
+        # 与作者脚本保持一致的高度对齐层级结构取值
+        nav_p.pose.position.x = wp['nav_pose']['position']['x']
+        nav_p.pose.position.y = wp['nav_pose']['position']['y']
+        nav_p.pose.position.z = wp['nav_pose']['position']['z']
+        nav_p.pose.orientation.x = wp['nav_pose']['orientation']['x']
+        nav_p.pose.orientation.y = wp['nav_pose']['orientation']['y']
+        nav_p.pose.orientation.z = wp['nav_pose']['orientation']['z']
+        nav_p.pose.orientation.w = wp['nav_pose']['orientation']['w']
         
         # 2) 构造 pid_pose
         pid_p = PoseStamped()
         pid_p.header.frame_id = 'map'
         pid_p.header.stamp = rospy.Time.now()
         
-        pwp = wp.get('pid_pose', wp)  # 回退到直接取wp，兼容旧有格式
-        ppos = pwp.get('position', {'x':0, 'y':0, 'z':0})
-        pori = pwp.get('orientation', {'x':0, 'y':0, 'z':0, 'w':1})
-        
-        pid_p.pose.position.x = ppos.get('x', 0.0)
-        pid_p.pose.position.y = ppos.get('y', 0.0)
-        pid_p.pose.position.z = ppos.get('z', 0.0)
-        pid_p.pose.orientation.x = pori.get('x', 0.0)
-        pid_p.pose.orientation.y = pori.get('y', 0.0)
-        pid_p.pose.orientation.z = pori.get('z', 0.0)
-        pid_p.pose.orientation.w = pori.get('w', 1.0)
+        pid_p.pose.position.x = wp['pid_pose']['position']['x']
+        pid_p.pose.position.y = wp['pid_pose']['position']['y']
+        pid_p.pose.position.z = wp['pid_pose']['position']['z']
+        pid_p.pose.orientation.x = wp['pid_pose']['orientation']['x']
+        pid_p.pose.orientation.y = wp['pid_pose']['orientation']['y']
+        pid_p.pose.orientation.z = wp['pid_pose']['orientation']['z']
+        pid_p.pose.orientation.w = wp['pid_pose']['orientation']['w']
 
         goal.nav_pose = nav_p
         goal.pid_pose = pid_p
 
-        rospy.loginfo('[seu_nav] 正在导航至 "%s" (nav_x=%.2f, nav_y=%.2f)',
-                      location, nav_p.pose.position.x, nav_p.pose.position.y)
+        rospy.loginfo('[seu_nav] 正在导航至 "%s" (实际匹配航点="%s", nav_x=%.2f, nav_y=%.2f)',
+                      req_location, matched_name, nav_p.pose.position.x, nav_p.pose.position.y)
 
         # --- 4. 发送导航目标并等待结果 ---
         # 先确认 Action Server 可用

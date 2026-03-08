@@ -1,10 +1,21 @@
 # seu_nav —— SEU 导航服务包 (2026版)
 
+- 作者：东南大学自动化学院机器人工程系 周艺舵
+
 ## 概述
 
 `seu_nav` 是 GPSR 项目的导航服务封装包。它对外提供一个 ROS Service (`nav_service`)，上层状态机只需传入**目标地点名称**（字符串），即可完成导航。
 
-内部实现上，`seu_nav` 通过 `actionlib` 连接 `catkin_robocup_2` 工作空间中的 `task_nav` Action Server，由其控制 `move_base` 执行实际路径规划与运动。
+内部实现上，`seu_nav` 作为 **ROS Service Server** 接收请求，并作为 **ROS ActionLib Client** 连接 `catkin_robocup_2` 提供的 `task_nav` Action Server 发送带双坐标 (`nav_pose` 和 `pid_pose`) 的 `TaskNavGoal`。
+
+---
+
+## 2026年 核心架构更新 🚀
+
+1. **底层交互框架升级 (Service → ActionLib)**：摒弃了以前直接控制 `move_base` 的方式，改为向最新的 `catkin_robocup_2` 提供 Action Goal。这使得导航具备了更清晰的状态查询和超时/打断机制。
+2. **双位姿架构支持 (Double Pose)**：对齐最新的导航底盘要求，将目标解耦为 `nav_pose` (用于底盘粗定位行驶) 与 `pid_pose` (用于对接端点/手眼微调)，YAML 数据结构完全跟随上游 `catkin_robocup_2` 作者的示范格式。
+3. **"到手即用" 的解耦配置**：取消了启动时的参数传递需求。内部代码直接硬编码解析与本包配套的 `config/waypoints.yaml`，并原封不动地存储原生 YAML `dict`。当底盘作者下发新版 yaml 时，支持直接替换文件即可生效测试。
+4. **混合容错的名字路由匹配**：增强了 NLP 到导航地点的联想映射。兼顾了底盘作者要求的驼峰严格匹配（如 `StartPoint`）和状态机器人的自然语言宽松匹配（如 `start point`, `START_POINT`）。
 
 ---
 
@@ -43,19 +54,16 @@ rosrun tracer_nav task_nav_server.py
 
 ---
 
-## 2. 启动 seu_nav 导航服务
+## 2. 启动 seu_nav 导航服务 (启动格式)
 
 ```bash
 # 终端 3：source GPSR_code 工作空间
 source /home/duo/GPSR_ws_zyd/GPSR_code/devel/setup.bash
 
-# 启动导航服务（使用默认航点文件）
+# 💡 2026 新特性：只需一行无参命令即可启动，航点文件已被硬编码指向配置目录。
 rosrun seu_nav nav_service.py
 
-# 或指定自定义航点文件
-rosrun seu_nav nav_service.py _waypoints_file:=/path/to/your/waypoints.yaml
-
-# 或指定导航超时时间（默认 120 秒）
+# (可选) 指定导航超时时间（默认 120 秒）
 rosrun seu_nav nav_service.py _timeout:=180
 ```
 
@@ -63,8 +71,7 @@ rosrun seu_nav nav_service.py _timeout:=180
 
 | 参数名 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `~waypoints_file` | string | `<包路径>/config/waypoints.yaml` | 航点 YAML 文件路径 |
-| `~timeout` | int | `120` | 单次导航超时时间（秒） |
+| `~timeout` | int | `120` | 单次导航超时时间（秒）。超时会自动取消 Action 目标。 |
 
 ---
 
@@ -82,16 +89,18 @@ rosrun seu_nav nav_service.py _timeout:=180
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `des` | `string` | 目标地点名称，如 `"kitchen"`、`"living room"`、`"living_room"` |
+| `des` | `string` | 目标地点名称，如 `"Kitchen"`、`"living room"`、`"start_point"` |
 
-> **名称匹配规则：** 输入会自动转为小写，下划线 `_` 和空格 ` ` 视为等价。  
-> 例如 `"Living_Room"`、`"living room"`、`"living_room"` 均能匹配航点 `living_room`。
+> **名称匹配规则 (重要)：**  
+> 1. **期望格式 (精确匹配)**: 首选与 `waypoints.yaml` 中的键名完全一致（例如原样输入 `StartPoint`）。  
+> 2. **兼容格式 (宽松匹配)**: 若未精确命中，系统会自动**忽略大小写**、并**将下划线 `_` 和空格 ` ` 视为等价**。  
+> 举例：若 YAML 中的键名是 `StartPoint`，无论你在服务请求传入 `"start_point"`、`"start point"` 还是 `"START POINT"`，均能成功回退匹配到 `StartPoint`。
 
 ### 输出 (Response)
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `state` | `bool` | 导航是否成功。`True` = 到达目标，`False` = 失败 |
+| `state` | `bool` | 导航是否成功。`True` = Action Server 报告到达目标，`False` = 失败/超时/未知地点 |
 | `errormsg` | `string` | 错误信息。成功时为空字符串，失败时包含具体原因 |
 
 ### 可能的错误信息
@@ -115,22 +124,37 @@ rosservice call /nav_service "{des: 'living room'}"
 
 ---
 
-## 4. 航点配置文件 (waypoints.yaml)
+## 4. 航点配置文件 (waypoints.yaml) 的期望组织格式
 
-航点文件位于 `config/waypoints.yaml`，格式如下：
+本包使用独立分离的航点文件 `config/waypoints.yaml`。为了与底盘作者 (`catkin_robocup_2`) 保持代码解析上的一致，此处强制期望要求每个地点包含 **`nav_pose`** 与 **`pid_pose`** 两套位姿体系。
+
+> **提示：如果上游发送了新的 yaml，直接覆盖此 `waypoints.yaml` 即可开箱即用。**
+
+格式示例如下：
 
 ```yaml
 waypoints:
-  kitchen:
-    position:
-      x: -1.0
-      y: 3.0
-      z: 0.0
-    orientation:
-      x: 0.0
-      y: 0.0
-      z: 0.707
-      w: 0.707
+  StartPoint:
+    nav_pose:
+      position:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      orientation:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+        w: 1.0
+    pid_pose:
+      position:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      orientation:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+        w: 1.0
 ```
 
 ### 如何获取航点坐标
@@ -144,27 +168,27 @@ waypoints:
 
 ---
 
-## 5. 系统架构
+## 5. 输入输出信号与系统架构 (ActionLib & Services)
 
-```
+```text
 ┌─────────────────────────────────────────────────────┐
 │  gpsr_smach.py (GPSR 状态机)                          │
-│  调用 rosservice call /nav_service "{des: 'xxx'}"    │
+│  发出信号：rosservice call /nav_service "{des: 'xxx'}"│
 └────────────────────┬────────────────────────────────┘
-                     │ ROS Service
+                     │ ROS Service (seu_nav/seu_nav)
                      ▼
 ┌─────────────────────────────────────────────────────┐
 │  seu_nav / nav_service.py                            │
-│  - 从 YAML 加载航点                                   │
-│  - 地点名称 → PoseStamped                             │
-│  - 通过 ActionLib 发送 TaskNavGoal                    │
+│  - 作为 Service Server 等待请求                        │
+│  - 匹配 YAML 文件中的目标地点与双级 Pose (nav & pid)    │
+│  - 作为 ActionLib Client 发出 TaskNavGoal (阻塞超时)   │
 └────────────────────┬────────────────────────────────┘
-                     │ ActionLib (task_nav)
+                     │ ROS ActionLib (tracer_nav/TaskNavAction)
                      ▼
 ┌─────────────────────────────────────────────────────┐
 │  tracer_nav / task_nav_server.py  (catkin_robocup_2) │
-│  - 接收 TaskNavGoal                                   │
-│  - 转发至 move_base                                   │
+│  - 等待 TaskNavGoal                                   │
+│  - 转发至底层 move_base 或执行其他对准逻辑                │
 └────────────────────┬────────────────────────────────┘
                      │ ActionLib (move_base)
                      ▼
