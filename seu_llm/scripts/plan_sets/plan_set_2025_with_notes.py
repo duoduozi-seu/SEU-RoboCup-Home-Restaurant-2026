@@ -11,23 +11,23 @@ action_dict = {
     # 去某地找某人指引到某地
     "Go to the kitchen then meet Adel and take them to the desk":"[['move_to', 'kitchen'], ['look_for_person', 'Adel', 'nocount'], ['lead_to', 'desk']]",
     # 去某地找某物拿某物放某地
-    "Go to the kitchen then look for a fruit and grasp it and put it on the sink":"[['move_to','kitchen'],['look_for_obj','fruit','none'],['grasp','fruit'],['move_to','sink'],['put_on','fruit','sink']]",
+    "Go to the kitchen then look for a fruit and grasp it and put it on the sink":"[['find_object', 'fruit', 'kitchen'], ['grasp', 'current_query_object'], ['move_to', 'sink'], ['put_on', 'current_query_object', 'sink']]",
     # 去某地找某物给我
-    "Go to the bathroom then look for an orange juice and get it and give it to me":"[['move_to', 'bathroom'], ['look_for_obj', 'orange_juice','none'], ['grasp', 'orange_juice'], ['move_to', 'initial location'], ['look_for_person', 'me'], ['deliver', 'orange_juice']]",
+    "Go to the bathroom then look for an orange juice and get it and give it to me":"[['find_object', 'orange_juice', 'bathroom'], ['grasp', 'current_query_object'], ['move_to', 'initial location'], ['look_for_person', 'me', 'nocount'], ['deliver', 'current_query_object']]",
     # 去某地找某物给某地的某人
-    "Get an orange from the kitchen table and bring it to the standing person in the bathroom":"[['move_to', 'kitchen_table'], ['look_for_obj', 'orange','none'], ['grasp', 'orange'], ['move_to', 'bathroom'], ['look_for_person', 'standing', 'nocount'], ['deliver', 'orange']]",
-    "Please give me the object behind the lays from the storage table": "[['move_to', 'storage table'], ['look_for_obj', 'lays', 'behind'], ['grasp', 'obj_name'], ['move_to', 'initial location'], ['look_for_person', 'me', 'nocount'], ['deliver', 'obj_name']]",
+    "Get an orange from the kitchen table and bring it to the standing person in the bathroom":"[['find_object', 'orange', 'kitchen_table'], ['grasp', 'current_query_object'], ['move_to', 'bathroom'], ['look_for_person', 'standing', 'nocount'], ['deliver', 'current_query_object']]",
+    "Please give me the object behind the lays from the storage table": "[['relate_object', 'any', 'lays', 'behind', 'storage_table'], ['grasp', 'current_query_object'], ['move_to', 'initial location'], ['look_for_person', 'me', 'nocount'], ['deliver', 'current_query_object']]",
     # 告诉我某地某物的数量
-    "Tell me how many snacks there are on the cabinet":"[['move_to', 'cabinet'], ['look_for_obj', 'snack','count'],['move_to', 'initial location'], ['look_for_person', 'me'], ['info_inform', 'obj_count']]",
+    "Tell me how many snacks there are on the cabinet":"[['count_object', 'snack', 'cabinet'], ['move_to', 'initial location'], ['look_for_person', 'me', 'nocount'], ['info_inform', 'query_result_count']]",
     # 告诉我某地怎样的人的数量
-    "Tell me how many persons raising their right arm are in the living room":"[['move_to', 'living room'], ['look_for_person, 'raising_right','count'], ['move_to','initial location'], ['look_for_person','me', 'nocount'], ['info_inform','person_count']]",
+    "Tell me how many persons raising their right arm are in the living room":"[['move_to', 'living room'], ['look_for_person', 'raising_right', 'count'], ['move_to','initial location'], ['look_for_person','me', 'nocount'], ['info_inform','person_count']]",
     "Tell me how many people in the living room are wearing black sweaters":"[['move_to', 'living room'], ['look_for_person', 'black_sweater', 'count'], ['move_to','initial location'], ['look_for_person','me', 'nocount'], ['info_inform', 'person_count']]",
     # 告诉我某地的某人的某些信息
     "Tell me the gesture of the person in the bedroom": "[['move_to', 'bedroom'], ['look_for_person', 'any', 'nocount'], ['person_analyze', 'gesture'],  ['move_to','initial location'], ['look_for_person','me', 'nocount'], ['info_inform', 'gesture']]",
     # 告诉我某地的某物的某些信息
-    "Tell me what is the biggest cleaning supply on the refrigerator":"[['move_to', 'refrigerator'], ['look_for_obj', 'cleaning supply','biggest'], ['move_to','initial location'], ['look_for_person','me', 'nocount'], ['info_inform', 'obj_name']]",
-    "Tell me what is the biggest thing in the living room":"[['move_to', 'living room'], ['look_for_obj', 'any','biggest'], ['move_to','initial location'], ['look_for_person','me', 'nocount'], ['info_inform', 'obj_name']]",
-    "tell me the object on the top of xuebi in the bedroom": "[['move_to', 'bedroom'], ['look_for_obj', 'xuebi','top'], ['move_to', 'initial location'], ['look_for_person', 'me', 'nocount'], ['info_inform', 'obj_name']]",
+    "Tell me what is the biggest cleaning supply on the refrigerator":"[['analyze_object', 'cleaning_supply', 'biggest', 'refrigerator'], ['move_to','initial location'], ['look_for_person','me', 'nocount'], ['info_inform', 'query_result_label']]",
+    "Tell me what is the biggest thing in the living room":"[['analyze_object', 'any', 'biggest', 'living_room'], ['move_to','initial location'], ['look_for_person','me', 'nocount'], ['info_inform', 'query_result_label']]",
+    "tell me the object on the top of xuebi in the bedroom": "[['relate_object', 'any', 'xuebi', 'top', 'bedroom'], ['move_to', 'initial location'], ['look_for_person', 'me', 'nocount'], ['info_inform', 'query_result_label']]",
     # 跟某衣着的人打招呼然后各种动作
     "Introduce yourself to the person wearing a yellow coat in the living room and follow them":"[['move_to', 'living room'], ['look_for_person', 'yellow_coat', 'nocount'], ['info_inform', 'introduce'], ['follow', 'none']]",
     # 跟某名字的人打招呼然后各种动作
@@ -46,9 +46,9 @@ action_dict = {
     "Take the person wearing a red shirt from the potted plant to the living room":"[['move_to', 'potted_plant'], ['look_for_person', 'red_shirt', 'nocount'], ['lead_to', 'living room']]",
     "Lead me to the living room":"[['move_to','initial location'], ['look_for_person','me', 'nocount'],['lead_to', 'living room']]",
     # 给我某地的某物
-    "Give me a chocolate jello from the shelf":"[['move_to', 'shelf'], ['look_for_obj', 'chocolate jello','none'], ['grasp', 'chocolate jello'], ['move_to','initial location'], ['look_for_person','me', 'nocount'],['deliver', 'orange']]",
+    "Give me a chocolate jello from the shelf":"[['find_object', 'chocolate_jello', 'shelf'], ['grasp', 'current_query_object'], ['move_to','initial location'], ['look_for_person','me', 'nocount'],['deliver', 'current_query_object']]",
     # 告诉我某地怎么样的某物是什么
-    "Tell me what is the heaviest snack on the pantry": "[['move_to', 'pantry'], ['look_for_obj', 'snack','heaviest'],  ['move_to','initial location'], ['look_for_person','me', 'nocount'], ['info_inform', 'obj_name']]",
+    "Tell me what is the heaviest snack on the pantry": "[['analyze_object', 'snack', 'heaviest', 'pantry'], ['move_to','initial location'], ['look_for_person','me', 'nocount'], ['info_inform', 'query_result_label']]",
     # 给某地某着装的人打招呼
     "Introduce yourself to the person wearing an orange jacket in the office and say your teams affiliation":"[['move_to', 'office'], ['look_for_person', 'orange_jacket', 'nocount'], ['info_inform', 'introduce'], ['info_inform', 'team_affiliation']]",
     # 给某地某名字的人打招呼
@@ -65,12 +65,12 @@ action_dict = {
     # 直接回答问题
     "Who is the most handsome person in Canada":"[['answer','Who is the most handsome person in Canada']]",
     # 其他
-    "Go to the washroom pick up a paper and give it to John":"[['move_to', 'washroom'], ['look_for_obj', 'paper','none'], ['grasp', 'paper'], ['look_for_person', 'John'], ['deliver', 'paper']]",
-    "Get an orange juice from the sink and put orange juice on the bookshelf":"[['move_to', 'sink'], ['look_for_obj', 'orange_juice','none'], ['grasp', 'orange_juice'], ['move_to', 'bookshelf'], ['put_on', 'orange_juice', 'bookshelf']]",
+    "Go to the washroom pick up a paper and give it to John":"[['find_object', 'paper', 'washroom'], ['grasp', 'current_query_object'], ['look_for_person', 'John', 'nocount'], ['deliver', 'current_query_object']]",
+    "Get an orange juice from the sink and put orange juice on the bookshelf":"[['find_object', 'orange_juice', 'sink'], ['grasp', 'current_query_object'], ['move_to', 'bookshelf'], ['put_on', 'current_query_object', 'bookshelf']]",
     #信息不完全
-    "please give me a drink":"[['move_to', 'side_table'], ['look_for_obj', 'drink','none'], ['grasp', 'drink'], ['move_to', 'initial location'], ['look_for_person', 'me', 'nocount'], ['deliver', 'drink']]",
-    "please give me a food": "[['move_to', 'desk', 'bedroom'], ['look_for_obj', 'food','none'], ['grasp', 'food'], ['move_to', 'initial location'], ['look_for_person', 'me', 'nocount'], ['deliver', 'food']]",
-    "please give me a cleaning stuff":"[['move_to', 'dishwasher'], ['look_for_obj', 'cleaning stuff','none'], ['grasp', 'cleaning stuff'], ['move_to', 'initial location'], ['look_for_person', 'me', 'nocount'], ['deliver', 'cleaning stuff']]",
+    "please give me a drink":"[['find_object', 'drink', 'side_table'], ['grasp', 'current_query_object'], ['move_to', 'initial location'], ['look_for_person', 'me', 'nocount'], ['deliver', 'current_query_object']]",
+    "please give me a food": "[['find_object', 'food', 'bedroom'], ['grasp', 'current_query_object'], ['move_to', 'initial location'], ['look_for_person', 'me', 'nocount'], ['deliver', 'current_query_object']]",
+    "please give me a cleaning stuff":"[['find_object', 'cleaning_stuff', 'dishwasher'], ['grasp', 'current_query_object'], ['move_to', 'initial location'], ['look_for_person', 'me', 'nocount'], ['deliver', 'current_query_object']]",
 }
 
 # 将字典转换为格式化的JSON字符串

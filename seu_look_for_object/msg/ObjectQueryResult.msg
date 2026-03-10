@@ -1,0 +1,10 @@
+bool success
+string status_code
+string message
+string query_mode
+string target_class
+string reference_class
+string resolved_label
+int32 count
+ObjectDetectionResult selected_object
+ObjectDetectionResult[] candidate_objects

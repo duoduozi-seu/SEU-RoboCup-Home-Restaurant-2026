@@ -8,8 +8,12 @@ project(seu_smach_main)
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
+  dobot
+  geometry_msgs
   roscpp
+  robot_msgs
   rospy
+  seu_look_for_object
   smach
   smach_ros
   std_msgs
@@ -118,7 +122,18 @@ generate_messages(
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES seu_gpsr
-#  CATKIN_DEPENDS roscpp rospy smach smach_ros std_msgs
+  CATKIN_DEPENDS
+    dobot
+    geometry_msgs
+    message_runtime
+    robot_msgs
+    roscpp
+    rospy
+    seu_look_for_object
+    seu_voice
+    smach
+    smach_ros
+    std_msgs
 #  DEPENDS system_lib
 )
 

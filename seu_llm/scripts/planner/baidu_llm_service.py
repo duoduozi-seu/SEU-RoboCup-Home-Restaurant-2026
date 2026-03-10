@@ -128,7 +128,7 @@ def analyze(req):
     url = "https://qianfan.baidubce.com/v2/chat/completions"
     
     # 定义基元动作
-    action_base = "move_to, speak, answer, look_for_person, look_for_obj, follow, lead_to, person_analyze, info_inform, grasp, deliver, put_on,answer"
+    action_base = "move_to, speak, answer, look_for_person, find_object, relate_object, count_object, analyze_object, follow, lead_to, person_analyze, info_inform, grasp, deliver, put_on"
     prompt = f"from actions import {action_base}"
 
     # 将action_base转换为列表形式

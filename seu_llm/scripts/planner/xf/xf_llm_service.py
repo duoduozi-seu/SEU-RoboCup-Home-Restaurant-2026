@@ -60,7 +60,7 @@ def analyze(req):
     rospy.loginfo("Start to analyze the command")
 
     # 定义基元动作
-    action_base = "move_to, look_for_obj, look_for_person, follow, grasp, pass_to, speak, answer"
+    action_base = "move_to, find_object, relate_object, count_object, analyze_object, look_for_person, follow, grasp, pass_to, speak, answer"
     prompt = f"from actions import {action_base}"
 
     # 将action_base转换为列表形式

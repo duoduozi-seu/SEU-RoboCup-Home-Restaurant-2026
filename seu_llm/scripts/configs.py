@@ -46,8 +46,14 @@ MAX_RETRY_TIMES = 5
 # =========================
 # Prompt / 规则常量
 # =========================
-# 可执行动作基元（与原 baidu_llm_service 保持一致）
-ACTION_BASE = "move_to, speak, answer, look_for_person, look_for_obj, follow, lead_to, person_analyze, info_inform, grasp, deliver, put_on, answer"
+# 可执行动作基元：
+# 1. 物体相关动作已经拆成四个显式查询接口；
+# 2. `look_for_obj` 已从动作集合中移除，避免 LLM 继续输出旧式“目标 + feature”混合接口。
+ACTION_BASE = (
+    "move_to, speak, answer, look_for_person, find_object, relate_object, "
+    "count_object, analyze_object, follow, lead_to, person_analyze, "
+    "info_inform, grasp, deliver, put_on"
+)
 # 使用逗号切分后逐项 strip，避免因空格不规范导致动作名合并
 ACTION_BASE_LIST = [item.strip() for item in ACTION_BASE.split(",") if item.strip()]
 
@@ -59,7 +65,19 @@ ANALYZE_INSTRUCTION_PROMPT = (
     "2) Do NOT output any extra words, explanations, markdown, or code fences.\n"
     "3) Do NOT use prefix like 'Answer:'.\n"
     "4) Each step must be in the form ['action', 'parameter1', ...].\n"
-    "5) Action names must be chosen only from the provided action set."
+    "5) Action names must be chosen only from the provided action set.\n"
+    "6) Use explicit object-query actions only:\n"
+    "   ['find_object', target_class, search_scope]\n"
+    "   ['relate_object', target_class, reference_class, relation, search_scope]\n"
+    "   ['count_object', target_class, search_scope]\n"
+    "   ['analyze_object', target_class, metric, search_scope]\n"
+    "7) Do NOT use ['move_to', scope] immediately before an object-query action, "
+    "because object-query actions already perform scope-internal search and navigation.\n"
+    "8) If a later manipulation step uses the latest object-query result, use the "
+    "token 'current_query_object' in ['grasp', ...], ['deliver', ...], or ['put_on', ...].\n"
+    "9) If a later report step uses the latest object-query result, use "
+    "'query_result_label' or 'query_result_count' in ['info_inform', ...].\n"
+    "10) Use underscore style for object classes and search scope names whenever possible."
 )
 
 # 任务规划的场景先验信息（与原服务保持一致）
@@ -73,7 +91,11 @@ PROMPT_KNOWN = (
     "Please note that this information may not be entirely correct, such as food items in the bedroom "
     "that do not necessarily have chip. "
     "Others: dont need count without key how many;must analyze if want to tell somebody something about "
-    "somebody; you must grasp obj before deliver; you can direct move to furniture."
+    "somebody; you must grasp obj before deliver; you can direct move to furniture. "
+    "Object-query actions already search inside the given scope, so do not add an extra move_to before them. "
+    "When an object query is followed by manipulation, prefer current_query_object instead of repeating or guessing "
+    "the final object label. When an object query is followed by reporting, use query_result_label or "
+    "query_result_count."
 )
 
 # 问答主提示词：限制语言与输出格式

@@ -15,6 +15,17 @@ import smach
 import smach_ros
 
 from seu_smach_main.srv import *
+from seu_look_for_object.msg import ObjectQueryResult
+from seu_look_for_object.srv import (
+    AnalyzeObject,
+    AnalyzeObjectRequest,
+    CountObject,
+    CountObjectRequest,
+    FindObject,
+    FindObjectRequest,
+    RelateObject,
+    RelateObjectRequest,
+)
 import sys
 import time
 from fpdf import FPDF
@@ -41,7 +52,10 @@ COMMAND_PDF_TITLE = "Successfully execute the command"  # str: 命令执行结�
 seuhome_speech_recognition_name = 'speech_recognition_service'  # str: 语音识别服务名
 seuhome_llm_name = 'gemini_llm_service'  # str: LLM 服务名（任务解析与问答）
 seuhome_find_person_name = 'find_person_service'  # str: 找人服务名
-seuhome_find_object_name = 'find_object_service'  # str: 找物服务名
+seuhome_find_object_name = 'find_object_service'  # str: 普通找物服务名
+seuhome_relate_object_name = 'relate_object_service'  # str: 关系找物服务名
+seuhome_count_object_name = 'count_object_service'  # str: 物体计数服务名
+seuhome_analyze_object_name = 'analyze_object_service'  # str: 物体分析服务名
 seuhome_nav_name = 'nav_service'  # str: 导航服务名
 seuhome_follow_name = 'follow_service'  # str: 跟随服务名
 seuhome_grasp_name = "dobot_server"  # str: 机械臂抓取服务名（当前脚本中未直接使用）
@@ -78,6 +92,81 @@ def get_info(key):
     except:
         result = None
     return result
+
+
+def build_empty_object_query_result(status_code="EMPTY", message=""):
+    """构造一个空的物体查询结果。
+
+    说明：
+    1. 物体查询链路改造后，主状态机不再依赖 `obj_pos/obj_name/obj_count` 这类 ROS Param；
+    2. 统一用 `ObjectQueryResult` 在状态机内部传递最近一次查询结果；
+    3. 当查询尚未发生、查询失败、或服务异常时，都用这个空结果占位，避免后续状态读到脏数据。
+
+    Args:
+        status_code (str): 结果状态码，例如 `EMPTY`、`SERVICE_EXCEPTION`。
+        message (str): 供日志和调试阅读的补充说明。
+
+    Returns:
+        ObjectQueryResult: 字段齐全但 `success=False` 的空结果对象。
+    """
+    result = ObjectQueryResult()
+    result.success = False
+    result.status_code = status_code
+    result.message = message
+    result.query_mode = ""
+    result.target_class = ""
+    result.reference_class = ""
+    result.resolved_label = ""
+    result.count = 0
+    return result
+
+
+def get_object_query_result(userdata):
+    """从 SMACH userdata 中读取最近一次物体查询结果。"""
+    try:
+        return userdata.object_query_result
+    except AttributeError:
+        return None
+
+
+def resolve_query_object_label(userdata, fallback=""):
+    """从最近一次物体查询结果里提取“最终应使用的物体标签”。
+
+    优先级：
+    1. `resolved_label`：表示经过关系/排序/复核后最终选中的对象标签；
+    2. `selected_object.label`：当服务尚未单独填充 resolved_label 时，回退到选中目标本身的标签；
+    3. `fallback`：最后才使用动作参数中的原始文本。
+    """
+    result = get_object_query_result(userdata)
+    if result is None:
+        return fallback
+    if getattr(result, "resolved_label", ""):
+        return result.resolved_label
+    selected_object = getattr(result, "selected_object", None)
+    if selected_object is not None and getattr(selected_object, "label", ""):
+        return selected_object.label
+    return fallback
+
+
+def build_query_result_reply(info_kind, query_result):
+    """根据最近一次物体查询结果生成直接播报文本。
+
+    这里刻意不再经过旧的 `info_inform_service` 旁路拼接对象信息，
+    因为对象查询的结果已经在状态机本地可用，继续走服务只会把数据再拆散一次。
+    """
+    if query_result is None or not getattr(query_result, "success", False):
+        return ""
+
+    if info_kind in ("query_result_label", "obj_name"):
+        label = query_result.resolved_label or query_result.selected_object.label
+        if not label:
+            return ""
+        return f"the target object is {label}"
+
+    if info_kind in ("query_result_count", "obj_count"):
+        return f"the target object count is {query_result.count}"
+
+    return ""
 
 
 def rotate_robot(vel_pub, angular_speed, duration):
@@ -362,7 +451,11 @@ class GraspState(smach.State):
     """抓取状态：发布目标物体位置并控制机械臂执行抓取动作。"""
 
     def __init__(self, arg):
-        smach.State.__init__(self, outcomes=['success', 'failure'])
+        smach.State.__init__(
+            self,
+            outcomes=['success', 'failure'],
+            input_keys=['object_query_result'],
+        )
         # object_position 发布器：向机械臂或感知链路同步目标物体位姿。
         self.detect_result_pub = rospy.Publisher(
             '/detect_result2', object_position, queue_size=10
@@ -370,7 +463,7 @@ class GraspState(smach.State):
         self.cli = rospy.ServiceProxy("dobot_goal", dobot_control)  # ServiceProxy: 机械臂控制服务客户端
         self.vel_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=10)  # Publisher: 底盘速度控制发布器
         self.msg = String()  # String: 占位消息对象，当前实现未使用
-        self.obj = arg[0]  # str: 要抓取的目标物体名称
+        self.obj = arg[0] if arg else ""  # str: 规划器给出的对象名；真正执行时优先取最近一次查询结果
 
     def execute(self, userdata):
         # 调试模式下直接跳过抓取执行，避免机械臂和底盘动作。
@@ -378,38 +471,45 @@ class GraspState(smach.State):
             rospy.loginfo("debug=True，GraspState 直接返回 success")
             return 'success'
 
-        pos = get_info("obj_pos")  # dict | None: 期望结构 {'label': str, 'x': float, 'y': float, 'z': float}
-        if pos is not None:
-            p = object_position()
-            p.label =pos['label']
-            p.x = pos['x']
-            p.y = pos['y']
-            p.z = pos['z']
-            self.detect_result_pub.publish(p)
-            # 使用状态内部的发布器和消息对象
-            rospy.loginfo("机械臂正在向前抓取...")
-            speech_to_text(f"start to grasp {self.obj}")
-            self.req = dobot_control._request_class()
-            self.req.goal = "groceries_catch1"
-            reqr = self.cli(self.req)
-
-            rospy.loginfo("机器人正在后退...")
-            vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)  # 根据实际情况调整
-            twist_msg = Twist()
-            twist_msg.linear.x = -1  # 缓慢后退
-            vel_pub.publish(twist_msg)
-            rospy.sleep(5)  # 前进一段时间
-            rotate_robot(self.vel_pub, angular_speed=-0.5, duration=7)
-
-            rospy.loginfo("机械臂正在向后收缩...")
-            self.req = dobot_control._request_class()
-            self.req.goal = "groceries_catch2"
-            reqr = self.cli(self.req)
-            speech_to_text("finish grasp")
-            rospy.loginfo("机械臂抓取成功")
-            return 'success'
-        else:
+        query_result = get_object_query_result(userdata)
+        if query_result is None or not getattr(query_result, "success", False):
+            rospy.logerr("GraspState 缺少有效 object_query_result，无法执行抓取")
             return 'failure'
+
+        selected_object = query_result.selected_object
+        if not getattr(selected_object, "pose_valid", False):
+            rospy.logerr("GraspState 收到的 selected_object 不包含有效三维位姿")
+            return 'failure'
+
+        # 将统一查询结果转换成旧机械臂链路仍在使用的 object_position 消息。
+        p = object_position()
+        p.label = resolve_query_object_label(userdata, self.obj)
+        p.x = selected_object.pose.pose.position.x
+        p.y = selected_object.pose.pose.position.y
+        p.z = selected_object.pose.pose.position.z
+        self.detect_result_pub.publish(p)
+
+        rospy.loginfo("机械臂正在向前抓取...")
+        speech_to_text(f"start to grasp {p.label}")
+        self.req = dobot_control._request_class()
+        self.req.goal = "groceries_catch1"
+        self.cli(self.req)
+
+        rospy.loginfo("机器人正在后退...")
+        vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)  # 根据实际情况调整
+        twist_msg = Twist()
+        twist_msg.linear.x = -1  # 缓慢后退
+        vel_pub.publish(twist_msg)
+        rospy.sleep(5)  # 前进一段时间
+        rotate_robot(self.vel_pub, angular_speed=-0.5, duration=7)
+
+        rospy.loginfo("机械臂正在向后收缩...")
+        self.req = dobot_control._request_class()
+        self.req.goal = "groceries_catch2"
+        self.cli(self.req)
+        speech_to_text("finish grasp")
+        rospy.loginfo("机械臂抓取成功")
+        return 'success'
 
 
 
@@ -418,8 +518,12 @@ class DeliverState(smach.State):
     """递交状态：机械臂把物体递给目标人物，并等待口头确认。"""
 
     def __init__(self, arg):
-        smach.State.__init__(self, outcomes=['success', 'failure'])
-        self.target = arg[0]  # str: 递交对象（通常为人名/称呼）
+        smach.State.__init__(
+            self,
+            outcomes=['success', 'failure'],
+            input_keys=['object_query_result'],
+        )
+        self.target = arg[0] if arg else ""  # str: 规划器里的对象占位；递交动作会优先播报最近一次查询到的对象名
         self.cli = rospy.ServiceProxy("dobot_goal", dobot_control)  # ServiceProxy: 机械臂控制服务
         self.msg = String()  # String: 占位消息对象，当前实现未使用
         self.word = ""  # str: 实时语音识别最近一次结果
@@ -432,7 +536,8 @@ class DeliverState(smach.State):
             return 'success'
 
         # 语音播报
-        speech_to_text( f"Passing to {self.target}")
+        target_name = resolve_query_object_label(userdata, self.target)
+        speech_to_text(f"Passing {target_name if target_name else 'the object'}")
         self.req = dobot_control._request_class()
         self.req.goal = "gpsr_give1"
         reqr = self.cli(self.req)
@@ -465,8 +570,12 @@ class PutOnState(smach.State):
     """放置状态：控制机械臂将物体放到目标位置。"""
 
     def __init__(self, arg):
-        smach.State.__init__(self, outcomes=['success', 'failure'])
-        self.obj = arg[0]  # str: 物体名称
+        smach.State.__init__(
+            self,
+            outcomes=['success', 'failure'],
+            input_keys=['object_query_result'],
+        )
+        self.obj = arg[0]  # str: 物体名称；若值为 `current_query_object`，则运行时从最近一次查询结果解析
         self.target = arg[1]  # str: 放置位置名称
         self.cli = rospy.ServiceProxy("dobot_goal", dobot_control)  # ServiceProxy: 机械臂控制服务
         self.msg = String()  # String: 占位消息对象，当前实现未使用
@@ -479,7 +588,8 @@ class PutOnState(smach.State):
             return 'success'
 
         # 语音播报
-        speech_to_text(f"Put {self.obj} to {self.target}")
+        obj_name = resolve_query_object_label(userdata, self.obj)
+        speech_to_text(f"Put {obj_name if obj_name else self.obj} to {self.target}")
         result = self.pass_to(self.target)
         if result:
             return 'success'
@@ -621,91 +731,205 @@ class PersonAnalyzeState(smach.State):
             print("Service call Failed: " + srv_name + ": %s" % e)
             return False
 
-# 物品分析
-# 该功能合并至find_obj
-class ObjAnalyzeState(smach.State):
-    """物体分析占位状态（当前功能并入 find_obj）。"""
+# 物体分析
+class AnalyzeObjectState(smach.State):
+    """物体分析状态：调用 analyze_object_service 返回排序/比较后的目标结果。"""
 
     def __init__(self, arg):
-        smach.State.__init__(self, outcomes=['success', 'failure'])
-        self.target = arg[0]  # str: 目标物体名称（当前占位）
+        smach.State.__init__(
+            self,
+            outcomes=['success', 'failure'],
+            output_keys=['object_query_result'],
+        )
+        self.target_class = arg[0] if len(arg) > 0 else ""  # str: 目标类别，例如 cleaning_supply / snack / any
+        self.metric = arg[1] if len(arg) > 1 else ""  # str: 分析指标，例如 biggest / heaviest
+        self.search_scope = arg[2] if len(arg) > 2 else ""  # str: 搜索范围，由 object 查询模块内部负责巡航
+        self.timeout_sec = float(arg[3]) if len(arg) > 3 else 180.0  # float: 查询超时时间，默认 180 秒
 
     def execute(self, userdata):
-        # 调试模式下直接返回成功；该状态当前本身也为占位实现。
         if debug:
-            rospy.loginfo("debug=True，ObjAnalyzeState 直接返回 success")
-            return 'success'
-        return 'success'
-
-
-
-# 物品分析
-# 该功能合并至find_obj
-class ObjCountState(smach.State):
-    """物体计数占位状态（当前功能并入 find_obj）。"""
-
-    def __init__(self, arg):
-        smach.State.__init__(self, outcomes=['success', 'failure'])
-        self.target = arg[0]  # str: 目标物体名称（当前占位）
-
-    def execute(self, userdata):
-        # 调试模式下直接返回成功；该状态当前本身也为占位实现。
-        if debug:
-            rospy.loginfo("debug=True，ObjCountState 直接返回 success")
-            return 'success'
-        return 'success'
-
-# 找物
-class LookForObjState(smach.State):
-    """找物状态：调用视觉/感知服务查找目标物体。"""
-
-    def __init__(self, arg):
-        smach.State.__init__(self, outcomes=['success', 'failure'])
-        self.target = arg[0]  # str: 目标物体名称
-        self.feature = arg[1]  # str: 查找特征（颜色/属性/位置描述等）
-
-    def execute(self,userdata):
-        # 调试模式下直接跳过找物流程，避免触发感知服务。
-        if debug:
-            rospy.loginfo("debug=True，LookForObjState 直接返回 success")
+            rospy.loginfo("debug=True，AnalyzeObjectState 直接返回 success")
             return 'success'
 
-        # 执行操作
-        word = "Looking for object "+ str(self.target)
-        # 语音播报
-        speech_to_text(word)
-        
-        result = self.look_for_obj(self.target)
-        word= "Successfully found object" + str(self.target)
-        if result:
-            speech_to_text(word)
+        speech_to_text(
+            f"Analyzing {self.target_class} in {self.search_scope} by {self.metric}"
+        )
+        result = self.call_service()
+        userdata.object_query_result = result
+        if result.success:
+            speech_to_text(f"Successfully analyzed {result.resolved_label}")
             return 'success'
-        else:
-            return 'failure'
+        return 'failure'
 
-    def look_for_obj(self, target):
-        """调用找物服务。"""
-        rospy.loginfo("Looking for object {}".format(target))
-        srv_name = seuhome_find_object_name  # 当前服务的名称
-        client = rospy.ServiceProxy(srv_name, seu_findobject)  # 当前操作的服务
-        rospy.wait_for_service(srv_name)  # 等待服务
-        rospy.loginfo(srv_name + ' available')
+    def call_service(self):
+        """调用 analyze_object_service。"""
+        srv_name = seuhome_analyze_object_name
+        client = rospy.ServiceProxy(srv_name, AnalyzeObject)
+        rospy.wait_for_service(srv_name)
+        rospy.loginfo("%s available", srv_name)
         try:
-            request = seu_findobjectRequest()
-            request.object = target
-            request.feature = self.feature
-            response = client.call(request)  # 返回值
-            if response.state == True:
-                rospy.loginfo('Service call Succeeded: ' + srv_name)  # 调用成功
-                return True
-            else:
-                rospy.logerr("Service call Failed: " + srv_name)  # 调用失败
-                rospy.logerr("errormsg: " + response.errormsg)
-                return False  
+            request = AnalyzeObjectRequest()
+            request.target_class = self.target_class
+            request.metric = self.metric
+            request.search_scope = self.search_scope
+            request.timeout_sec = self.timeout_sec
+            response = client.call(request)
+            return response.result
+        except rospy.ServiceException as e:
+            rospy.logerr("Service call Failed: %s: %s", srv_name, e)
+            return build_empty_object_query_result(
+                status_code="SERVICE_EXCEPTION",
+                message=str(e),
+            )
 
-        except rospy.ServiceException as e:  # 调用失败，输出具体信息
-            print("Service call Failed: " + srv_name + ": %s" % e)
-            return False
+
+class CountObjectState(smach.State):
+    """物体计数状态：调用 count_object_service 返回给定范围内的目标数量。"""
+
+    def __init__(self, arg):
+        smach.State.__init__(
+            self,
+            outcomes=['success', 'failure'],
+            output_keys=['object_query_result'],
+        )
+        self.target_class = arg[0] if len(arg) > 0 else ""  # str: 目标类别
+        self.search_scope = arg[1] if len(arg) > 1 else ""  # str: 搜索范围
+        self.timeout_sec = float(arg[2]) if len(arg) > 2 else 180.0  # float: 查询超时时间
+
+    def execute(self, userdata):
+        if debug:
+            rospy.loginfo("debug=True，CountObjectState 直接返回 success")
+            return 'success'
+
+        speech_to_text(f"Counting {self.target_class} in {self.search_scope}")
+        result = self.call_service()
+        userdata.object_query_result = result
+        if result.success:
+            speech_to_text(f"Count finished, total {result.count}")
+            return 'success'
+        return 'failure'
+
+    def call_service(self):
+        """调用 count_object_service。"""
+        srv_name = seuhome_count_object_name
+        client = rospy.ServiceProxy(srv_name, CountObject)
+        rospy.wait_for_service(srv_name)
+        rospy.loginfo("%s available", srv_name)
+        try:
+            request = CountObjectRequest()
+            request.target_class = self.target_class
+            request.search_scope = self.search_scope
+            request.timeout_sec = self.timeout_sec
+            response = client.call(request)
+            return response.result
+        except rospy.ServiceException as e:
+            rospy.logerr("Service call Failed: %s: %s", srv_name, e)
+            return build_empty_object_query_result(
+                status_code="SERVICE_EXCEPTION",
+                message=str(e),
+            )
+
+
+class FindObjectState(smach.State):
+    """普通找物状态：调用 find_object_service 在给定范围内搜索目标物体。"""
+
+    def __init__(self, arg):
+        smach.State.__init__(
+            self,
+            outcomes=['success', 'failure'],
+            output_keys=['object_query_result'],
+        )
+        self.target_class = arg[0] if len(arg) > 0 else ""  # str: 目标类别
+        self.search_scope = arg[1] if len(arg) > 1 else ""  # str: 搜索范围
+        self.timeout_sec = float(arg[2]) if len(arg) > 2 else 180.0  # float: 查询超时时间
+
+    def execute(self, userdata):
+        if debug:
+            rospy.loginfo("debug=True，FindObjectState 直接返回 success")
+            return 'success'
+
+        speech_to_text(f"Looking for {self.target_class} in {self.search_scope}")
+        result = self.call_service()
+        userdata.object_query_result = result
+        if result.success:
+            speech_to_text(f"Successfully found {resolve_query_object_label(userdata, self.target_class)}")
+            return 'success'
+        return 'failure'
+
+    def call_service(self):
+        """调用 find_object_service。"""
+        srv_name = seuhome_find_object_name
+        client = rospy.ServiceProxy(srv_name, FindObject)
+        rospy.wait_for_service(srv_name)
+        rospy.loginfo("%s available", srv_name)
+        try:
+            request = FindObjectRequest()
+            request.target_class = self.target_class
+            request.search_scope = self.search_scope
+            request.timeout_sec = self.timeout_sec
+            response = client.call(request)
+            return response.result
+        except rospy.ServiceException as e:
+            rospy.logerr("Service call Failed: %s: %s", srv_name, e)
+            return build_empty_object_query_result(
+                status_code="SERVICE_EXCEPTION",
+                message=str(e),
+            )
+
+
+class RelateObjectState(smach.State):
+    """关系找物状态：调用 relate_object_service 查询带关系约束的目标物体。"""
+
+    def __init__(self, arg):
+        smach.State.__init__(
+            self,
+            outcomes=['success', 'failure'],
+            output_keys=['object_query_result'],
+        )
+        self.target_class = arg[0] if len(arg) > 0 else ""  # str: 目标类别，可为 any
+        self.reference_class = arg[1] if len(arg) > 1 else ""  # str: 参考物类别
+        self.relation = arg[2] if len(arg) > 2 else ""  # str: 关系词，例如 behind / top / left_of
+        self.search_scope = arg[3] if len(arg) > 3 else ""  # str: 搜索范围
+        self.timeout_sec = float(arg[4]) if len(arg) > 4 else 180.0  # float: 查询超时时间
+
+    def execute(self, userdata):
+        if debug:
+            rospy.loginfo("debug=True，RelateObjectState 直接返回 success")
+            return 'success'
+
+        speech_to_text(
+            f"Looking for {self.target_class} {self.relation} {self.reference_class} in {self.search_scope}"
+        )
+        result = self.call_service()
+        userdata.object_query_result = result
+        if result.success:
+            speech_to_text(
+                f"Successfully found {resolve_query_object_label(userdata, self.target_class)}"
+            )
+            return 'success'
+        return 'failure'
+
+    def call_service(self):
+        """调用 relate_object_service。"""
+        srv_name = seuhome_relate_object_name
+        client = rospy.ServiceProxy(srv_name, RelateObject)
+        rospy.wait_for_service(srv_name)
+        rospy.loginfo("%s available", srv_name)
+        try:
+            request = RelateObjectRequest()
+            request.target_class = self.target_class
+            request.reference_class = self.reference_class
+            request.relation = self.relation
+            request.search_scope = self.search_scope
+            request.timeout_sec = self.timeout_sec
+            response = client.call(request)
+            return response.result
+        except rospy.ServiceException as e:
+            rospy.logerr("Service call Failed: %s: %s", srv_name, e)
+            return build_empty_object_query_result(
+                status_code="SERVICE_EXCEPTION",
+                message=str(e),
+            )
 
 # 跟随 
 class FollowState(smach.State):
@@ -825,18 +1049,19 @@ class SpeakState(smach.State):
 class AnswerState(smach.State):
     """问答状态：调用 LLM 生成答案并播报。"""
 
-    def __init__(self,arg):
-        # smach.State.__init__(self, 
-        #                     outcomes=['success', 'failure'],
-        #                     input_keys=['answer_input'])# 状态输入数据，即需要解答的问题，由语音识别得到
-        smach.State.__init__(self, outcomes=['success', 'failure'])
-        self.question = arg[0]  # str: 需要回答的问题
+    def __init__(self, arg=None):
+        smach.State.__init__(
+            self,
+            outcomes=['success', 'failure'],
+            input_keys=['answer_input'],
+        )
+        self.question = arg[0] if arg else ""  # str: 固定问题；为空时从 userdata.answer_input 动态读取
 
     def execute(self,userdata):
         # 执行操作
-        # question = userdata.answer_input
-        rospy.loginfo("The question is: %s",self.question)
-        result = self.answer(self.question)
+        question = self.question if self.question else userdata.answer_input
+        rospy.loginfo("The question is: %s",question)
+        result = self.answer(question)
         if result:
             return 'success'
         else:
@@ -874,13 +1099,24 @@ class InfoInformState(smach.State):
     def __init__(self,arg):
         smach.State.__init__(self, 
                             outcomes=['success', 'failure'],
-                            input_keys=['answer_input'])  # `answer_input: str`，兼容旧接口，当前实现未使用
+                            input_keys=['object_query_result'])
         self.info_kind = arg[0]  # str: 需要告知的信息类型（由上游动作参数提供）
 
     def execute(self,userdata):
         # 调试模式下直接跳过信息告知流程，避免触发 info_inform_service。
         if debug:
             rospy.loginfo("debug=True，InfoInformState 直接返回 success")
+            return 'success'
+
+        # 物体查询结果已在当前状态机内部可直接获取时，优先本地生成播报文本。
+        # 这样可以彻底避开旧 `obj_name/obj_count` ROS Param 旁路。
+        direct_reply = build_query_result_reply(
+            self.info_kind,
+            get_object_query_result(userdata),
+        )
+        if direct_reply:
+            rospy.loginfo("InfoInformState 直接播报最近一次物体查询结果：%s", direct_reply)
+            speech_to_text(direct_reply)
             return 'success'
 
         global ori_command
@@ -1074,6 +1310,11 @@ def create_state_machine(actions,ori_command):
     # 创建子状态机并挂载原始指令到 userdata，供部分状态读取。
     sm = smach.StateMachine(outcomes=['sub_success', 'sub_failure'])
     sm.userdata.ori_command = ori_command
+    sm.userdata.answer_input = ""
+    sm.userdata.object_query_result = build_empty_object_query_result(
+        status_code="INIT",
+        message="object query result not set yet",
+    )
     # 根据解析出的动作类型，逐项注册对应状态节点。
     with sm:
         for i in range(len(actions)):
@@ -1088,27 +1329,32 @@ def create_state_machine(actions,ori_command):
                 smach.StateMachine.add(state_names[i],
                                        GraspState(arg),
                                        transitions={'success': state_names[i+1],# grasp和pass_to具体逻辑代码未编写
-                                                    'failure': state_names[i]})
+                                                    'failure': state_names[i]},
+                                       remapping={'object_query_result': 'object_query_result'})
             elif action == 'deliver':
                 smach.StateMachine.add(state_names[i],
                                        DeliverState(arg),
                                        transitions={'success': state_names[i+1],
-                                                    'failure': state_names[i]})
+                                                    'failure': state_names[i]},
+                                       remapping={'object_query_result': 'object_query_result'})
             elif action == 'put_on':
                 smach.StateMachine.add(state_names[i],
                                        PutOnState(arg),
                                        transitions={'success': state_names[i+1],
-                                                    'failure': state_names[i]})
-            elif action == 'obj_analyze':
+                                                    'failure': state_names[i]},
+                                       remapping={'object_query_result': 'object_query_result'})
+            elif action == 'analyze_object':
                 smach.StateMachine.add(state_names[i],
-                                       ObjAnalyzeState(arg),
+                                       AnalyzeObjectState(arg),
                                        transitions={'success': state_names[i+1],
-                                                    'failure': state_names[i]})
-            elif action == 'obj_count':
+                                                    'failure': state_names[i]},
+                                       remapping={'object_query_result': 'object_query_result'})
+            elif action == 'count_object':
                 smach.StateMachine.add(state_names[i],
-                                       ObjCountState(arg),
+                                       CountObjectState(arg),
                                        transitions={'success': state_names[i+1],
-                                                    'failure': state_names[i]})
+                                                    'failure': state_names[i]},
+                                       remapping={'object_query_result': 'object_query_result'})
             elif action == 'person_analyze':
                 smach.StateMachine.add(state_names[i],
                                        PersonAnalyzeState(arg),
@@ -1118,17 +1364,25 @@ def create_state_machine(actions,ori_command):
                 smach.StateMachine.add(state_names[i],
                                        InfoInformState(arg),
                                        transitions={'success': state_names[i+1],
-                                                    'failure': state_names[i]})
+                                                    'failure': state_names[i]},
+                                       remapping={'object_query_result': 'object_query_result'})
             elif action == 'look_for_person':
                 smach.StateMachine.add(state_names[i],
                                        LookForPersonState(arg),
                                        transitions={'success': state_names[i+1],
                                                     'failure': state_names[i]})
-            elif action == 'look_for_obj':
+            elif action == 'find_object':
                 smach.StateMachine.add(state_names[i],
-                                       LookForObjState(arg),
+                                       FindObjectState(arg),
                                        transitions={'success': state_names[i+1],
-                                                    'failure': state_names[i]})
+                                                    'failure': state_names[i]},
+                                       remapping={'object_query_result': 'object_query_result'})
+            elif action == 'relate_object':
+                smach.StateMachine.add(state_names[i],
+                                       RelateObjectState(arg),
+                                       transitions={'success': state_names[i+1],
+                                                    'failure': state_names[i]},
+                                       remapping={'object_query_result': 'object_query_result'})
             elif action == 'follow':
                 smach.StateMachine.add(state_names[i],
                                        FollowState(arg),
@@ -1152,7 +1406,11 @@ def create_state_machine(actions,ori_command):
                 smach.StateMachine.add(state_names[i],
                                        AnswerState(arg), # 如果是要回答问题，创建回答问题的嵌套状态机
                                        transitions={'success': state_names[i+1],
-                                                    'failure': 'sub_failure'})
+                                                    'failure': 'sub_failure'},
+                                       remapping={'answer_input': 'answer_input'})
+            else:
+                rospy.logerr("Unsupported action in create_state_machine: %s", action)
+                return None
 
     return sm
 
