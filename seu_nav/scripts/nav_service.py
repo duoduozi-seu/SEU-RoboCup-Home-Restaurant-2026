@@ -225,7 +225,7 @@ class NavServiceNode:
         # 获取导航结果
         result = self.nav_client.get_result()
         if result and result.success:
-            rospy.loginfo('[seu_nav] 导航成功: "%s"', location)
+            rospy.loginfo('[seu_nav] 导航成功: "%s"', matched_name)
             response.state = True
             response.errormsg = ''
         else:

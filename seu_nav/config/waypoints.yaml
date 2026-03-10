@@ -104,3 +104,45 @@ waypoints:
         y: 0.0
         z: 1.0
         w: 0.0
+  Kitchen_0:
+    nav_pose:
+      position:
+        x: -1.0
+        y: 3.0
+        z: 0.0
+      orientation:
+        x: 0.0
+        y: 0.0
+        z: 0.707
+        w: 0.707
+    pid_pose:
+      position:
+        x: -1.0
+        y: 3.0
+        z: 0.0
+      orientation:
+        x: 0.0
+        y: 0.0
+        z: 0.707
+        w: 0.707
+  Bedroom_0:
+    nav_pose:
+      position:
+        x: 5.0
+        y: -1.0
+        z: 0.0
+      orientation:
+        x: 0.0
+        y: 0.0
+        z: 1.0
+        w: 0.0
+    pid_pose:
+      position:
+        x: 5.0
+        y: -1.0
+        z: 0.0
+      orientation:
+        x: 0.0
+        y: 0.0
+        z: 1.0
+        w: 0.0
