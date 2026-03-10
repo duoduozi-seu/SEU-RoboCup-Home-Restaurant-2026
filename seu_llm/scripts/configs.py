@@ -71,13 +71,15 @@ ANALYZE_INSTRUCTION_PROMPT = (
     "   ['relate_object', target_class, reference_class, relation, search_scope]\n"
     "   ['count_object', target_class, search_scope]\n"
     "   ['analyze_object', target_class, metric, search_scope]\n"
-    "7) Do NOT use ['move_to', scope] immediately before an object-query action, "
-    "because object-query actions already perform scope-internal search and navigation.\n"
+    "7) For room or place object search, first move_to the same scope, then call the object-query action. "
+    "Example: ['move_to', 'kitchen'], ['count_object', 'box', 'kitchen'].\n"
     "8) If a later manipulation step uses the latest object-query result, use the "
     "token 'current_query_object' in ['grasp', ...], ['deliver', ...], or ['put_on', ...].\n"
     "9) If a later report step uses the latest object-query result, use "
     "'query_result_label' or 'query_result_count' in ['info_inform', ...].\n"
-    "10) Use underscore style for object classes and search scope names whenever possible."
+    "10) If an object-query task returns to the initial location for reporting, directly info_inform after "
+    "['move_to', 'initial location']; do not add look_for_person because the asker stays at the initial location.\n"
+    "11) Use underscore style for object classes and search scope names whenever possible."
 )
 
 # 任务规划的场景先验信息（与原服务保持一致）
@@ -92,10 +94,12 @@ PROMPT_KNOWN = (
     "that do not necessarily have chip. "
     "Others: dont need count without key how many;must analyze if want to tell somebody something about "
     "somebody; you must grasp obj before deliver; you can direct move to furniture. "
-    "Object-query actions already search inside the given scope, so do not add an extra move_to before them. "
+    "Before any object-query action for a room or place, first use move_to with the same scope. "
+    "After arriving, the object-query action performs fine-grained anchor search inside that scope. "
     "When an object query is followed by manipulation, prefer current_query_object instead of repeating or guessing "
     "the final object label. When an object query is followed by reporting, use query_result_label or "
-    "query_result_count."
+    "query_result_count. If the robot returns to the initial location to report an object-query result, "
+    "assume the asker stays at the initial location, directly info_inform, and do not add look_for_person."
 )
 
 # 问答主提示词：限制语言与输出格式

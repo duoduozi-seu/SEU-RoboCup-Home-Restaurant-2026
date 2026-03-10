@@ -51,48 +51,55 @@ class NavAnchorCatalog:
     """按 scope 管理导航锚点名称。
 
     职责边界：
-    - ✅ 从 YAML 中读取并分组精细巡航锚点名称
-    - ✅ 按 index 排序，提供有序的巡航顺序
+    - ✅ 从 YAML 中读取并分组精细巡航锚点名称（如 Kitchen_0, Kitchen_1）
+    - ✅ 按 index 序号排序，提供有序的巡航顺序
     - ❌ 不负责坐标解析（交给 seu_nav）
-    - ❌ 不负责发布导航目标（交给 seu_nav）
+    - ❌ 不负责发布导航目标（交给 SMACH 或 seu_nav）
     """
 
     def __init__(self, anchors_by_scope: Mapping[str, Iterable[AnchorPoint]]):
+        # 初始化内部字典。
+        # 核心逻辑：对每一个区域（scope）下的锚点列表进行排序
+        # 排序依据是我们在 AnchorPoint 中解析出来的 index（即名称后缀的数字）
         self._anchors_by_scope: Dict[str, List[AnchorPoint]] = {
             scope: sorted(list(anchors), key=lambda anchor: anchor.index)
             for scope, anchors in anchors_by_scope.items()
         }
 
-        # 对每个 scope 做简单的完整性检查
+        # 对每个区域做简单的完整性与逻辑检查
         for scope, anchors in self._anchors_by_scope.items():
+            # 分支：如果该区域没有任何有效锚点
             if not anchors:
                 logger.warning(
                     "[AnchorCatalog] scope '%s' 没有任何有效的精细锚点，"
-                    "该区域将直接进入感知环节（不巡航）", scope
+                    "该区域将直接进入感知环节（即原地搜索，不巡航）", scope
                 )
                 continue
 
+            # 分支：检查第一个锚点是否从 0 开始
+            # 在我们的约定中，巡航点应该是 Kitchen_0, Kitchen_1... 
+            # 如果从 Kitchen_5 开始，虽然不影响运行，但可能意味着 YAML 配置有误。
             first_index = anchors[0].index
             if first_index != 0:
                 logger.warning(
                     "[AnchorCatalog] scope '%s' 的精细锚点不是从 _0 开始的，"
-                    "最小编号为 _%d（%s），将按现有顺序巡航",
+                    "实际是从 _%d（%s）开始，将按现有序号顺序巡航",
                     scope, first_index, anchors[0].name
                 )
 
     @classmethod
     def from_yaml_file(cls, yaml_path: str | Path) -> "NavAnchorCatalog":
-        """从 waypoints.yaml 文件中读取精细巡航锚点名称。
-
-        兼容以下 YAML 顶层结构（按优先级）：
-        1. `waypoints: {name: ...}`  —— seu_nav 使用的标准格式
-        2. `points: {name: ...}` 或 `anchors: {name: ...}`
-        3. 顶层直接是 `{name: ...}`
+        """【关键函数】从指定的 waypoints.yaml 文件中读取并构建锚点目录。
+        
+        这个函数会自动处理不同格式的 YAML 结构，确保兼容性。
         """
 
+        # 1. 读取文件内容并使用 yaml 库解析成 Python 字典
+        #    Path(yaml_path).read_text(...) 直接读取全文
         raw_data = yaml.safe_load(Path(yaml_path).read_text(encoding="utf-8")) or {}
 
-        # 按优先级尝试提取航点字典
+        # 2. 这里的 if-elif 分支是为了兼容各种版本的 waypoints.yaml 格式。
+        #    有的版本把数据放在 'waypoints' 键下，有的直接放在顶层。
         if "waypoints" in raw_data and isinstance(raw_data["waypoints"], dict):
             raw_mapping = raw_data["waypoints"]
         elif "points" in raw_data and isinstance(raw_data["points"], dict):
@@ -100,39 +107,50 @@ class NavAnchorCatalog:
         elif "anchors" in raw_data and isinstance(raw_data["anchors"], dict):
             raw_mapping = raw_data["anchors"]
         else:
-            # 顶层本身就是航点字典
+            # 兜底分支：如果以上键都没找到，假设整个文件顶层就是大字典
             raw_mapping = raw_data
 
+        # 3. 提取字典的所有键（即所有地点的名称列表），传给下一个处理函数
         return cls.from_name_list(list(raw_mapping.keys()))
 
     @classmethod
     def from_name_list(cls, names: List[str]) -> "NavAnchorCatalog":
-        """从航点名称列表构建锚点目录。
-
-        只提取符合 `<scope>_<数字>` 命名约定的条目，
-        其余名称（如 `Kitchen`、`StartPoint`）视为宽泛锚点，自动忽略。
+        """工具函数：从原始地名列表中筛选出符合“精细巡航点”要求的名字。
+        
+        它会过滤掉像 'Kitchen' 这种模糊地点，只留下 'Kitchen_0' 这种具体地点。
         """
 
         anchors_by_scope: Dict[str, List[AnchorPoint]] = {}
 
+        # 循环遍历每一个名字（比如：'Kitchen', 'Kitchen_0', 'LivingRoom_1'）
         for name in names:
+            # 使用前面定义的正则表达式进行匹配
             match = ANCHOR_NAME_PATTERN.match(name)
+            
+            # 分支：如果不符合 <名称>_<数字> 的格式
             if match is None:
-                # 不符合 `<scope>_<index>` 命名约定 → 宽泛锚点，跳过
+                # 说明这是“宽泛锚点”或“起始点”，在找物巡航中不需要它，直接跳过。
                 continue
 
+            # 如果匹配成功，从正则组里提取出区域名(scope)和序号(index)
             scope = match.group("scope")
             index = int(match.group("index"))
+            
+            # 封装成对象
             anchor = AnchorPoint(name=name, scope=scope, index=index)
+            
+            # 按照 scope 进行归类。
+            # setdefault 的意思是：如果该 scope 还没在字典里，就先初始化一个空列表 []。
             anchors_by_scope.setdefault(scope, []).append(anchor)
 
+        # 4. 最后实例化类对象。此时会触发 __init__ 里的排序逻辑。
         catalog = cls(anchors_by_scope)
 
+        # 检查逻辑：如果解析完一个精细锚点都没找到，打印警告。
         if not anchors_by_scope:
             logger.warning(
-                "[AnchorCatalog] YAML 中未找到任何精细巡航锚点"
-                "（需要 <Scope>_<数字> 格式的命名），"
-                "所有搜索请求将直接进入感知环节"
+                "[AnchorCatalog] YAML 中未找到任何符合 <区域>_<数字> 格式的精细巡航锚点。"
+                "这会导致机器人直接在原地开始搜索，而不会移动去房间各处看。"
             )
 
         return catalog

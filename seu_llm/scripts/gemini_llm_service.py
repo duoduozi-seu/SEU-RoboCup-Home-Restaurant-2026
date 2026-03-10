@@ -143,6 +143,37 @@ def _is_valid_action_list(action_str):
     return True
 
 
+def _should_retry_same_prompt(api_result):
+    """判断这次失败是否属于“传输层/网关层”瞬时错误。
+
+    设计意图：
+    1. 如果是 SSL EOF、连接被远端关闭、超时、5xx 等网络/网关问题，
+       当前 prompt 本身通常没有问题，不应该误切换到“格式修正 prompt”；
+    2. 这类错误最合理的策略是保持原始 prompt 不变，直接重新提交；
+    3. 只有真正拿到了模型文本、但文本格式不对时，才进入格式提示分支。
+
+    Args:
+        api_result (dict): `call_gemini_generate_content` 返回的统一结果结构。
+
+    Returns:
+        bool: True 表示应原样重试当前 prompt，False 表示继续走后续提取/格式修正逻辑。
+    """
+    status_code = api_result.get("status_code")
+    error = str(api_result.get("error", ""))
+
+    # `requests` 在握手失败、连接被重置、超时等情况下通常拿不到 HTTP 状态码，
+    # 此时应直接按传输层错误处理。
+    if status_code is None and error.startswith("RequestException:"):
+        return True
+
+    # 如果已经拿到了 5xx，说明请求到达了网关/服务端但上游暂时不可用。
+    # 这种情况同样不应污染 prompt，而应保留原始任务重试。
+    if isinstance(status_code, int) and status_code >= 500:
+        return True
+
+    return False
+
+
 def analyze(req):
     """
     任务规划主流程（与 baidu_llm_service 的处理逻辑一致）：
@@ -169,6 +200,9 @@ def analyze(req):
 
         if not api_result["ok"]:
             gemini_logerr("Gemini analyze request issue: %s", api_result["error"])
+            if _should_retry_same_prompt(api_result):
+                gemini_logerr("Transport or gateway failure detected. Retry with the same prompt.")
+                continue
 
         action_str = _extract_action_str(api_result["text"])
         if action_str:

@@ -209,18 +209,24 @@ def txt_to_pdf_fpdf(input_txt, output_pdf):
         input_txt (str): 输入 txt 路径。
         output_pdf (str): 输出 pdf 路径。
     """
-    # 若输入 txt 不存在，则直接返回，避免抛出文件不存在异常。
-    if not os.path.exists(input_txt):
-        return
-    # 创建 PDF 对象并逐行写入文本。
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
-    with open(input_txt, "r", encoding="utf-8") as file:
-        for line in file:
-            pdf.cell(0, 10, txt=line.strip(), ln=True)
+    try:
+        # 若输入 txt 不存在，则直接返回，避免抛出文件不存在异常。
+        if not os.path.exists(input_txt):
+            return
+        # 创建 PDF 对象并逐行写入文本。
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        with open(input_txt, "r", encoding="utf-8", errors="ignore") as file:
+            for line in file:
+                # FPDF (latin-1) 不支持中文或特殊 Unicode，这里做一次强制过滤转换
+                # 确保不会因为编码问题导致整个机器人程序崩溃
+                safe_line = line.encode("latin-1", "ignore").decode("latin-1")
+                pdf.cell(0, 10, txt=safe_line.strip(), ln=True)
 
-    pdf.output(output_pdf)
+        pdf.output(output_pdf)
+    except Exception as e:
+        rospy.logerr(f"导出 PDF 报告失败（编码或文件错误），但不影响主流程: {e}")
 
 
 def export_command_pdf(operations, pdf_num):
@@ -233,20 +239,27 @@ def export_command_pdf(operations, pdf_num):
     Returns:
         int: 自增后的 PDF 序号（`pdf_num + 1`）。
     """
-    # 确保输出目录存在，避免首次运行时目录不存在导致导出失败。
-    if not os.path.exists(RECORD_DIR):
-        os.makedirs(RECORD_DIR)
+    try:
+        # 确保输出目录存在，避免首次运行时目录不存在导致导出失败。
+        if not os.path.exists(RECORD_DIR):
+            os.makedirs(RECORD_DIR)
 
-    pdf_file = os.path.join(RECORD_DIR, f"{COMMAND_PDF_PREFIX}{pdf_num}.pdf")
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font('Arial', size=15)
+        pdf_file = os.path.join(RECORD_DIR, f"{COMMAND_PDF_PREFIX}{pdf_num}.pdf")
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font('Arial', size=15)
 
-    # PDF 第 1 行：固定标题；第 2 行：动作列表；第 3 行：导出时间。
-    pdf.cell(200, 10, txt=COMMAND_PDF_TITLE, ln=1, align='C')
-    pdf.cell(200, 10, txt=str(operations), ln=2, align='C')
-    pdf.cell(200, 10, txt=time.asctime(time.localtime(time.time())), ln=3, align='C')
-    pdf.output(pdf_file)
+        # 过滤非 latin-1 字符
+        safe_ops = str(operations).encode("latin-1", "ignore").decode("latin-1")
+
+        # PDF 第 1 行：固定标题；第 2 行：动作列表；第 3 行：导出时间。
+        pdf.cell(200, 10, txt=COMMAND_PDF_TITLE, ln=1, align='C')
+        pdf.cell(200, 10, txt=safe_ops, ln=2, align='C')
+        pdf.cell(200, 10, txt=time.asctime(time.localtime(time.time())), ln=3, align='C')
+        pdf.output(pdf_file)
+    except Exception as e:
+        rospy.logerr(f"导出命令 PDF 失败: {e}")
+    
     return pdf_num + 1
 
 
@@ -844,9 +857,9 @@ class FindObjectState(smach.State):
         self.timeout_sec = float(arg[2]) if len(arg) > 2 else 180.0  # float: 查询超时时间
 
     def execute(self, userdata):
-        if debug:
-            rospy.loginfo("debug=True，FindObjectState 直接返回 success")
-            return 'success'
+        # if debug:
+        #     rospy.loginfo("debug=True，FindObjectState 直接返回 success")
+        #     return 'success'
 
         speech_to_text(f"Looking for {self.target_class} in {self.search_scope}")
         result = self.call_service()

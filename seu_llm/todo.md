@@ -16,9 +16,11 @@
   - `['analyze_object', target_class, metric, search_scope]`
 - 原因：固定参数位比“靠 feature 猜模式”更稳定，后续你在 LLM 层做解析、做纠错、做 few-shot 示例都更容易约束。
 
-### 3. 物体查询动作前不要再额外生成 `move_to`
-- 建议：只保留查询动作本身，把 `search_scope` 直接交给对象查询模块。
-- 原因：新的 `seu_look_for_object` 会自己读取 `seu_nav` 的锚点 YAML，在 scope 内巡航、转圈、发现候选、抵近复核。前面再加一个 `move_to same_scope` 只是重复导航。
+### 3. 物体查询动作前要先生成同 scope 的 `move_to`
+- 建议：对房间、家具或地点搜索任务，统一写成：
+  - `['move_to', scope]`
+  - `['find_object' / 'relate_object' / 'count_object' / 'analyze_object', ..., scope]`
+- 原因：当前执行语义是先用 `seu_nav` 做粗导航，把机器人送到目标区域；之后 `seu_look_for_object` 才从该 scope 的精细锚点 `0` 开始巡航和转圈搜索。这一步不能省。
 
 ### 4. 操作类动作统一引用 `current_query_object`
 - 建议：当 `grasp`、`deliver`、`put_on` 的目标来自最近一次物体查询时，统一写成：
@@ -32,6 +34,14 @@
   - 讲“找到的是谁”时用 `['info_inform', 'query_result_label']`
   - 讲“数了多少个”时用 `['info_inform', 'query_result_count']`
 - 原因：旧的 `obj_name`、`obj_count` 本质上是伪变量，占位字符串和 ROS Param 旁路耦合太深。新状态机已经改成直接读最近一次查询结果，不该再让 LLM 生成旧占位名。
+
+### 5.1 物体查询后回原地汇报时，不要再补 `look_for_person`
+- 建议：如果任务链是“去某地做物体计数/分析/关系查询，然后回原地汇报”，统一写成：
+  - `['move_to', scope]`
+  - `['count_object' / 'analyze_object' / 'relate_object', ..., scope]`
+  - `['move_to', 'initial location']`
+  - `['info_inform', 'query_result_count' / 'query_result_label']`
+- 原因：你已经明确把执行语义定义成“默认提问者在原地等待”。这类任务回到 `initial location` 后不需要再次 `look_for_person`，否则只会多一次无意义的人搜索，并让 few-shot 持续教坏模型。
 
 ## 还建议继续加强的 prompt 规则
 
@@ -66,11 +76,11 @@
   - 分析并播报
 - 原因：现在 few-shot 对 LLM 的动作习惯影响很大。如果样例里仍大量保留旧 `look_for_obj`，即使主 prompt 改了，模型也容易回退到旧写法。
 
-### 11. 最好再加一条“禁止重复生成等价动作”
+### 11. 最好再加一条“禁止无效重复导航”
 - 建议：比如明确禁止：
-  - `['move_to', 'kitchen']` 后紧跟 `['find_object', 'apple', 'kitchen']`
-  - 同一任务连续两个对象查询动作使用同一个 scope 但没有中间目的
-- 原因：这类重复步骤在语言上看似合理，但对实际机器人执行是纯浪费时间。
+  - `['move_to', 'kitchen']` 后再重复一个完全相同的 `['move_to', 'kitchen']`
+  - `['move_to', 'kitchen']` 后连续两个对象查询都搜索 `kitchen`，但中间没有任何抓取、播报或切换任务目的
+- 原因：对象查询前的第一次 `move_to` 是必须的，但重复两次同样的粗导航没有收益，只会拖慢执行。
 
 ## 对应的主状态机配套约束
 
