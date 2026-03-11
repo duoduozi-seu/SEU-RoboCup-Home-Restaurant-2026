@@ -8,7 +8,6 @@ project(seu_smach_main)
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
-  dobot
   geometry_msgs
   roscpp
   robot_msgs
@@ -123,7 +122,6 @@ catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES seu_gpsr
   CATKIN_DEPENDS
-    dobot
     geometry_msgs
     message_runtime
     robot_msgs

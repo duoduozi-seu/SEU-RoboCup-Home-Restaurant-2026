@@ -134,6 +134,8 @@ timeout_sec: 60.0"
 | `object_query_server.py` | `~count_frame_count` | `15` | COUNT 每锚点统计帧数 |
 | `object_query_server.py` | `~preview_enabled` | `True` | 是否弹 OpenCV 视频窗口 |
 
+说明：节点会先尝试 `~realsense_width/~realsense_height/~realsense_fps` 指定的档位；若当前 D435i 或 USB 带宽不支持，会自动回退到 `640x480@30`。
+
 ### 3.4 对正与靠近控制相关
 
 | 位置 | 参数/变量 | 当前默认值 | 说明 |

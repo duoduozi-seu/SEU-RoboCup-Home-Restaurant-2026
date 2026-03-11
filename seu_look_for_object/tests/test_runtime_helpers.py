@@ -10,10 +10,25 @@ SCRIPT_PATH = PACKAGE_ROOT / "scripts" / "object_query_server.py"
 
 
 def _load_server_module():
+    captured_errors = []
+
+    def _capture_logerr(*args, **kwargs):
+        if not args:
+            captured_errors.append("")
+            return
+        template = args[0]
+        if len(args) == 1:
+            captured_errors.append(str(template))
+            return
+        try:
+            captured_errors.append(str(template) % args[1:])
+        except Exception:
+            captured_errors.append(" ".join(str(item) for item in args))
+
     fake_rospy = types.SimpleNamespace(
         loginfo=lambda *args, **kwargs: None,
         logwarn=lambda *args, **kwargs: None,
-        logerr=lambda *args, **kwargs: None,
+        logerr=_capture_logerr,
         sleep=lambda *args, **kwargs: None,
         is_shutdown=lambda: False,
         Duration=lambda value=0.0: value,
@@ -109,6 +124,7 @@ def _load_server_module():
     spec = importlib.util.spec_from_file_location("seu_look_for_object_object_query_server", SCRIPT_PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module._captured_log_errors = captured_errors
     return module
 
 
@@ -188,6 +204,110 @@ class RuntimeHelperTest(unittest.TestCase):
         source = SCRIPT_PATH.read_text(encoding="utf-8")
         self.assertIn('~approach_linear_speed", 0.15', source)
         self.assertIn("def _approach_to_target_with_constant_speed", source)
+
+    def test_dependency_missing_logs_import_diagnostics(self):
+        module = _load_server_module()
+        node = module.ObjectQueryRosNode.__new__(module.ObjectQueryRosNode)
+        node.nav_client = None
+        node.tf_buffer = object()
+
+        result = node._ensure_runtime_ready(require_tf=False)
+
+        self.assertIn("缺少 actionlib", result)
+        self.assertTrue(module._captured_log_errors)
+        self.assertIn("actionlib_imported", module._captured_log_errors[-1])
+        self.assertIn("task_nav_action_imported", module._captured_log_errors[-1])
+
+    def test_realsense_pipeline_falls_back_to_safe_profile(self):
+        module = _load_server_module()
+        warnings = []
+
+        def _capture_logwarn(*args, **kwargs):
+            if not args:
+                warnings.append("")
+                return
+            template = args[0]
+            if len(args) == 1:
+                warnings.append(str(template))
+                return
+            try:
+                warnings.append(str(template) % args[1:])
+            except Exception:
+                warnings.append(" ".join(str(item) for item in args))
+
+        module.rospy.logwarn = _capture_logwarn
+
+        class FakeConfig:
+            def __init__(self):
+                self.streams = []
+
+            def enable_stream(self, stream, width, height, fmt, fps):
+                self.streams.append((stream, width, height, fmt, fps))
+
+        class FakeColorProfile:
+            def as_video_stream_profile(self):
+                return self
+
+            def get_intrinsics(self):
+                return {"fx": 1.0, "fy": 1.0}
+
+        class FakePipelineProfile:
+            def get_stream(self, stream):
+                return FakeColorProfile()
+
+        class FakePipeline:
+            def start(self, config):
+                color_stream = next(item for item in config.streams if item[0] == fake_rs.stream.color)
+                if color_stream[1:4] == (1280, 720, fake_rs.format.bgr8) and color_stream[4] == 30:
+                    raise RuntimeError("Couldn't resolve requests")
+                return FakePipelineProfile()
+
+            def stop(self):
+                return None
+
+        class FakeStream:
+            color = "color"
+            depth = "depth"
+
+        class FakeFormat:
+            bgr8 = "bgr8"
+            z16 = "z16"
+
+        class FakeRs:
+            stream = FakeStream()
+            format = FakeFormat()
+
+            @staticmethod
+            def pipeline():
+                return FakePipeline()
+
+            @staticmethod
+            def config():
+                return FakeConfig()
+
+            @staticmethod
+            def align(stream):
+                return ("align", stream)
+
+        fake_rs = FakeRs()
+        module.rs = fake_rs
+
+        node = module.ObjectQueryRosNode.__new__(module.ObjectQueryRosNode)
+        node.realsense_width = 1280
+        node.realsense_height = 720
+        node.realsense_fps = 30
+        node.rs_pipeline = None
+        node.rs_align = None
+        node.color_intrinsics = None
+        node._log_runtime_dependency_error = lambda reason, require_tf: None
+
+        result = node._start_realsense_pipeline(require_tf=False)
+
+        self.assertEqual(result, "")
+        self.assertEqual((node.realsense_width, node.realsense_height, node.realsense_fps), (640, 480, 30))
+        self.assertIsNotNone(node.rs_pipeline)
+        self.assertEqual(node.color_intrinsics, {"fx": 1.0, "fy": 1.0})
+        self.assertTrue(any("已回退到 640x480@30" in message for message in warnings))
 
     def test_run_count_flow_sums_voted_counts_from_each_anchor(self):
         module = _load_server_module()

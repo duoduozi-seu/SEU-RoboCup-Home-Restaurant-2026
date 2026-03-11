@@ -1,3 +1,0 @@
-<launch>
- <node pkg="rviz" type="rviz" name="rviz" args="-d $(find seu_tracer_mini)/rviz/tracer.rviz" required="true" />
-</launch>

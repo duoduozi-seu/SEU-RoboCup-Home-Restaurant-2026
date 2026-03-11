@@ -32,7 +32,7 @@ from fpdf import FPDF
 from robot_msgs.msg import object_position
 from std_msgs.msg import String
 from geometry_msgs.msg import Twist
-from dobot.srv import dobot_control
+
 from seu_voice.srv import seu_voice as seu_voice_srv, seu_voiceRequest
 
 sys.path.append("/home/duo/GPSR_ws_zyd/GPSR_code/src")

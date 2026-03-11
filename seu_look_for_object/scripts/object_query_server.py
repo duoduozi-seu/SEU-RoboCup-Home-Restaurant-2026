@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/duo/anaconda3/envs/yolo_world/bin/python
 # -*- coding: utf-8 -*-
 """seu_look_for_object 运行时服务节点。
 
@@ -42,32 +42,40 @@ try:
 except ImportError:  # pragma: no cover
     rospy = None
 
+ACTIONLIB_IMPORT_ERROR = ""
 try:
     import actionlib
-except ImportError:  # pragma: no cover
+except ImportError as exc:  # pragma: no cover
     actionlib = None
+    ACTIONLIB_IMPORT_ERROR = str(exc)
 
+TF2_ROS_IMPORT_ERROR = ""
 try:
     import tf2_ros
-except ImportError:  # pragma: no cover
+except ImportError as exc:  # pragma: no cover
     tf2_ros = None
+    TF2_ROS_IMPORT_ERROR = str(exc)
 
 try:
     import tf2_geometry_msgs  # noqa: F401
 except ImportError:  # pragma: no cover
     tf2_geometry_msgs = None
 
+PYREALSENSE2_IMPORT_ERROR = ""
 try:
     import pyrealsense2 as rs
-except ImportError:  # pragma: no cover
+except ImportError as exc:  # pragma: no cover
     rs = None
+    PYREALSENSE2_IMPORT_ERROR = str(exc)
 
+ULTRALYTICS_IMPORT_ERROR = ""
 try:
     from ultralytics import YOLO
     from ultralytics.models.yolo.yoloe import YOLOEVPSegPredictor
-except ImportError:  # pragma: no cover
+except ImportError as exc:  # pragma: no cover
     YOLO = None
     YOLOEVPSegPredictor = None
+    ULTRALYTICS_IMPORT_ERROR = str(exc)
 
 try:
     from geometry_msgs.msg import PointStamped, PoseStamped, Twist
@@ -134,11 +142,13 @@ except ImportError:  # pragma: no cover
             self.scale = type("Scale", (), {"x": 0.0, "y": 0.0, "z": 0.0})()
             self.color = type("Color", (), {"r": 0.0, "g": 0.0, "b": 0.0, "a": 0.0})()
 
+TRACER_NAV_IMPORT_ERROR = ""
 try:
     from tracer_nav.msg import TaskNavAction, TaskNavGoal
-except ImportError:  # pragma: no cover
+except ImportError as exc:  # pragma: no cover
     TaskNavAction = None
     TaskNavGoal = None
+    TRACER_NAV_IMPORT_ERROR = str(exc)
 
 from seu_look_for_object.msg import ObjectDetectionResult, ObjectQueryResult
 from seu_look_for_object.srv import (
@@ -353,6 +363,74 @@ class ObjectQueryRosNode:
         self.count_service = rospy.Service("count_object_service", CountObject, self.handle_count)
         self.analyze_service = rospy.Service("analyze_object_service", AnalyzeObject, self.handle_analyze)
 
+    def _iter_realsense_profiles(self):
+        """按优先级给出可尝试的 RealSense 彩色/深度流组合。"""
+
+        candidates = [
+            (self.realsense_width, self.realsense_height, self.realsense_fps),
+            (640, 480, self.realsense_fps),
+            (640, 480, 30),
+        ]
+        seen = set()
+        for width, height, fps in candidates:
+            profile = (int(width), int(height), int(fps))
+            if profile in seen:
+                continue
+            if profile[0] <= 0 or profile[1] <= 0 or profile[2] <= 0:
+                continue
+            seen.add(profile)
+            yield profile
+
+    def _start_realsense_pipeline(self, require_tf: bool) -> str:
+        """启动 RealSense；请求档位失败时自动回退到 640x480@30。"""
+
+        requested_profile = (self.realsense_width, self.realsense_height, self.realsense_fps)
+        last_error = None
+
+        for width, height, fps in self._iter_realsense_profiles():
+            rospy.loginfo("启动 RealSense D435i：%dx%d@%d", width, height, fps)
+            pipeline = rs.pipeline()
+            rs_config = rs.config()
+            rs_config.enable_stream(rs.stream.color, width, height, rs.format.bgr8, fps)
+            rs_config.enable_stream(rs.stream.depth, width, height, rs.format.z16, fps)
+
+            try:
+                profile = pipeline.start(rs_config)
+            except RuntimeError as exc:
+                last_error = exc
+                rospy.logwarn("RealSense 启动失败：%dx%d@%d (%s)", width, height, fps, exc)
+                try:
+                    pipeline.stop()
+                except Exception:
+                    pass
+                continue
+
+            self.rs_pipeline = pipeline
+            self.rs_align = rs.align(rs.stream.color)
+            color_stream = profile.get_stream(rs.stream.color).as_video_stream_profile()
+            self.color_intrinsics = color_stream.get_intrinsics()
+            self.realsense_width = width
+            self.realsense_height = height
+            self.realsense_fps = fps
+
+            if (width, height, fps) != requested_profile:
+                rospy.logwarn(
+                    "RealSense 请求档位 %dx%d@%d 不可用，已回退到 %dx%d@%d。",
+                    requested_profile[0],
+                    requested_profile[1],
+                    requested_profile[2],
+                    width,
+                    height,
+                    fps,
+                )
+            return ""
+
+        reason = "RealSense 启动失败：请求的彩色/深度流组合均不可用。"
+        if last_error is not None:
+            reason = f"{reason} 最后错误: {last_error}"
+        self._log_runtime_dependency_error(reason, require_tf)
+        return reason
+
     def _init_ros_resources(self):
         """集中初始化 ROS 资源。"""
 
@@ -384,23 +462,67 @@ class ObjectQueryRosNode:
             except Exception:
                 pass
 
+    def _log_runtime_dependency_error(self, reason: str, require_tf: bool):
+        """在依赖检查失败时打印更详细的导入与运行时状态。"""
+
+        rospy.logerr("%s", reason)
+        rospy.logerr(
+            (
+                "运行时依赖诊断: require_tf=%s, actionlib_imported=%s, "
+                "task_nav_action_imported=%s, nav_client_ready=%s, tf2_ros_imported=%s, "
+                "tf_buffer_ready=%s, pyrealsense2_imported=%s, ultralytics_imported=%s, "
+                "cv2_imported=%s, numpy_imported=%s, actionlib_error='%s', "
+                "tracer_nav_error='%s', tf2_ros_error='%s', pyrealsense2_error='%s', "
+                "ultralytics_error='%s'"
+            ),
+            require_tf,
+            actionlib is not None,
+            TaskNavAction is not None,
+            getattr(self, "nav_client", None) is not None,
+            tf2_ros is not None,
+            getattr(self, "tf_buffer", None) is not None,
+            rs is not None,
+            YOLO is not None and YOLOEVPSegPredictor is not None,
+            cv2 is not None,
+            np is not None,
+            ACTIONLIB_IMPORT_ERROR,
+            TRACER_NAV_IMPORT_ERROR,
+            TF2_ROS_IMPORT_ERROR,
+            PYREALSENSE2_IMPORT_ERROR,
+            ULTRALYTICS_IMPORT_ERROR,
+        )
+
     def _ensure_runtime_ready(self, require_tf: bool) -> str:
         """检查视觉与导航运行时是否齐全。"""
 
         if getattr(self, "nav_client", None) is None:
-            return "缺少 actionlib 或 tracer_nav，无法导航到精细锚点。"
+            reason = "缺少 actionlib 或 tracer_nav，无法导航到精细锚点。"
+            self._log_runtime_dependency_error(reason, require_tf)
+            return reason
         if require_tf and getattr(self, "tf_buffer", None) is None:
-            return "缺少 tf2_ros，无法把目标投影到 map。"
+            reason = "缺少 tf2_ros，无法把目标投影到 map。"
+            self._log_runtime_dependency_error(reason, require_tf)
+            return reason
         if rs is None:
-            return "缺少 pyrealsense2，无法读取 D435i 数据。"
+            reason = "缺少 pyrealsense2，无法读取 D435i 数据。"
+            self._log_runtime_dependency_error(reason, require_tf)
+            return reason
         if YOLO is None or YOLOEVPSegPredictor is None:
-            return "缺少 ultralytics YOLOE 运行依赖。"
+            reason = "缺少 ultralytics YOLOE 运行依赖。"
+            self._log_runtime_dependency_error(reason, require_tf)
+            return reason
         if cv2 is None or np is None:
-            return "缺少 cv2 或 numpy。"
+            reason = "缺少 cv2 或 numpy。"
+            self._log_runtime_dependency_error(reason, require_tf)
+            return reason
         if not self.yolo_model_path.exists():
-            return f"YOLO 模型文件不存在：{self.yolo_model_path}"
+            reason = f"YOLO 模型文件不存在：{self.yolo_model_path}"
+            self._log_runtime_dependency_error(reason, require_tf)
+            return reason
         if not self.refer_image_path.exists():
-            return f"refer_image 文件不存在：{self.refer_image_path}"
+            reason = f"refer_image 文件不存在：{self.refer_image_path}"
+            self._log_runtime_dependency_error(reason, require_tf)
+            return reason
 
         if self.yolo_model is None:
             rospy.loginfo("加载 YOLOE 模型：%s", self.yolo_model_path)
@@ -408,18 +530,14 @@ class ObjectQueryRosNode:
             self.visual_prompts = self._load_visual_prompts(self.refer_image_path, self.refer_bbox)
 
         if self.rs_pipeline is None:
-            rospy.loginfo("启动 RealSense D435i：%dx%d@%d", self.realsense_width, self.realsense_height, self.realsense_fps)
-            self.rs_pipeline = rs.pipeline()
-            rs_config = rs.config()
-            rs_config.enable_stream(rs.stream.color, self.realsense_width, self.realsense_height, rs.format.bgr8, self.realsense_fps)
-            rs_config.enable_stream(rs.stream.depth, self.realsense_width, self.realsense_height, rs.format.z16, self.realsense_fps)
-            profile = self.rs_pipeline.start(rs_config)
-            self.rs_align = rs.align(rs.stream.color)
-            color_stream = profile.get_stream(rs.stream.color).as_video_stream_profile()
-            self.color_intrinsics = color_stream.get_intrinsics()
+            runtime_error = self._start_realsense_pipeline(require_tf)
+            if runtime_error:
+                return runtime_error
 
         if not self.nav_client.wait_for_server(rospy.Duration(5.0)):
-            return f"导航 Action Server '{self.task_nav_action_name}' 不可用。"
+            reason = f"导航 Action Server '{self.task_nav_action_name}' 不可用。"
+            self._log_runtime_dependency_error(reason, require_tf)
+            return reason
 
         return ""
 
