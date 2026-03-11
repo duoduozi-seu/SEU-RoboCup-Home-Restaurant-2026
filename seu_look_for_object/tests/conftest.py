@@ -5,7 +5,7 @@ import sys
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-PYTHON_SRC = PACKAGE_ROOT / "src"
+SCRIPTS_ROOT = PACKAGE_ROOT / "scripts"
 
-if str(PYTHON_SRC) not in sys.path:
-    sys.path.insert(0, str(PYTHON_SRC))
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
