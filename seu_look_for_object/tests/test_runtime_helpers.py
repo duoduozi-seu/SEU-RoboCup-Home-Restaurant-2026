@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 
-PACKAGE_ROOT = Path("/home/duo/GPSR_ws_zyd/GPSR_code/src/seu_look_for_object")
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PACKAGE_ROOT / "scripts" / "object_query_server.py"
 
 

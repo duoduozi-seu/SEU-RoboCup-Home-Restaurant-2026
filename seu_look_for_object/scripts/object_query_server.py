@@ -23,6 +23,7 @@ from __future__ import annotations
 from pathlib import Path
 import math
 import re
+import threading
 import time
 from collections import Counter
 import yaml
@@ -355,6 +356,10 @@ class ObjectQueryRosNode:
         self.color_intrinsics = None
         self.yolo_model = None
         self.visual_prompts = None
+        self.preview_frame = None
+        self.preview_lock = threading.Lock()
+        self.preview_thread = None
+        self.preview_stop = False
 
         self._init_ros_resources()
 
@@ -444,8 +449,38 @@ class ObjectQueryRosNode:
         self.cmd_vel_pub = rospy.Publisher(self.cmd_vel_topic, Twist, queue_size=10)
         self.candidate_pose_pub = rospy.Publisher(self.candidate_pose_topic, PoseStamped, queue_size=10)
         self.candidate_marker_pub = rospy.Publisher(self.candidate_marker_topic, Marker, queue_size=10)
+        if self.preview_enabled and cv2 is not None:
+            self.preview_thread = threading.Thread(target=self._preview_loop, name="look_for_object_preview", daemon=True)
+            self.preview_thread.start()
 
         rospy.on_shutdown(self._shutdown_runtime)
+
+    def _preview_loop(self):
+        """统一在固定线程里处理 OpenCV 窗口，避免 service 线程反复抢窗口对象。"""
+
+        window_opened = False
+        while not self.preview_stop and not rospy.is_shutdown():
+            frame = None
+            with self.preview_lock:
+                if self.preview_frame is not None:
+                    frame = self.preview_frame.copy()
+            if frame is not None:
+                cv2.imshow(PREVIEW_WINDOW_NAME, frame)
+                cv2.waitKey(1)
+                window_opened = True
+            time.sleep(0.03)
+
+        if window_opened:
+            cv2.destroyWindow(PREVIEW_WINDOW_NAME)
+            cv2.waitKey(1)
+
+    def _push_preview_frame(self, image):
+        """写入最新预览帧，由预览线程负责真正显示。"""
+
+        if not self.preview_enabled or cv2 is None or image is None:
+            return
+        with self.preview_lock:
+            self.preview_frame = image.copy()
 
     def _shutdown_runtime(self):
         """节点退出时尽量关干净。"""
@@ -456,11 +491,9 @@ class ObjectQueryRosNode:
                 self.rs_pipeline.stop()
             except Exception:
                 pass
-        if self.preview_enabled and cv2 is not None:
-            try:
-                cv2.destroyAllWindows()
-            except Exception:
-                pass
+        self.preview_stop = True
+        if self.preview_thread is not None and self.preview_thread.is_alive():
+            self.preview_thread.join(timeout=1.0)
 
     def _log_runtime_dependency_error(self, reason: str, require_tf: bool):
         """在依赖检查失败时打印更详细的导入与运行时状态。"""
@@ -871,8 +904,7 @@ class ObjectQueryRosNode:
                 bbox = item["bbox"]
                 cv2.rectangle(preview, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), (0, 255, 0), 2)
             cv2.putText(preview, f"{target_class} count={len(boxes)}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
-            cv2.imshow(PREVIEW_WINDOW_NAME, preview)
-            cv2.waitKey(1)
+            self._push_preview_frame(preview)
         return len(boxes)
 
     def _align_to_detection(self, detection: dict, target_class: str) -> bool:
@@ -965,8 +997,7 @@ class ObjectQueryRosNode:
             (0, 255, 0),
             2,
         )
-        cv2.imshow(PREVIEW_WINDOW_NAME, image)
-        cv2.waitKey(1)
+        self._push_preview_frame(image)
 
     def _read_depth_meters(self, depth_frame, center_u: int, center_v: int) -> float:
         """在检测框中心附近取一个小窗口，减少深度噪声。"""

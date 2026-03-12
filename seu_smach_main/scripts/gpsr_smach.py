@@ -1463,10 +1463,7 @@ if __name__ == '__main__':
 
     if not debug:
       camera = Camera(serial_number=1)
-    # cli = rospy.ServiceProxy("dobot_goal", dobot_control)
-    # req = dobot_control._request_class()
-    # req.goal = "reset"
-    # reqr = cli(req)
+
            
     # 创建输入状态机
     sm = smach.StateMachine(outcomes=['input_success', 'input_failure'])

@@ -1,11 +1,14 @@
-#! /home/syw/anaconda3/envs/GPSR/bin/python
+#!/usr/bin/env python3
 # -*- coding: UTF-8 -*-
 import sys
 import time
+from pathlib import Path
 
 import smach
 import smach_ros
-sys.path.append("/home/syw/code/robocup_nation/2024code/GPSR/src/common")
+COMMON_ROOT = Path(__file__).resolve().parents[2] / "common"
+if str(COMMON_ROOT) not in sys.path:
+    sys.path.insert(0, str(COMMON_ROOT))
 from common import *
 import requests
 import json
