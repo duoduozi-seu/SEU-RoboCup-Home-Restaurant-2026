@@ -9,7 +9,7 @@ import sys
 import os
 
 # 将代码路径加入系统路径，确保能找到 gpsr_smach 及其消息定义
-WORKSPACE_SRC = "/home/duo/GPSR_ws_zyd/GPSR_code/src"
+WORKSPACE_SRC = "/home/duo/GPSR_ws_zyd/catkin_robocup_2/src/GPSR_code/src"
 SCRIPTS_DIR = os.path.join(WORKSPACE_SRC, "seu_smach_main/scripts")
 sys.path.append(WORKSPACE_SRC)
 sys.path.append(SCRIPTS_DIR)

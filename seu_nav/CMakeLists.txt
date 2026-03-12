@@ -30,10 +30,10 @@ include_directories(
 )
 
 # 安装 Python 脚本
-catkin_install_python(PROGRAMS
-  scripts/nav_service.py
-  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-)
+# catkin_install_python(PROGRAMS
+#   scripts/nav_service.py
+#   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+# )
 
 # 安装配置文件
 install(DIRECTORY config/

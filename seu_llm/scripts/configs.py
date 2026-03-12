@@ -19,7 +19,7 @@ SEUHOME_LLM_NAME = "gemini_llm_service"
 LLM_NODE_NAME = "llm_service_node"
 
 # 任务模板文件路径（用于 task analyze）
-PLAN_SET_PATH = "/home/duo/GPSR_ws_zyd/GPSR_code/src/seu_llm/scripts/plan_sets/plan_set_2025.json"
+PLAN_SET_PATH = "/home/duo/GPSR_ws_zyd/catkin_robocup_2/src/GPSR_code/src/seu_llm/scripts/plan_sets/plan_set_2025.json"
 
 
 # =========================

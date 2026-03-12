@@ -35,13 +35,13 @@ from geometry_msgs.msg import Twist
 
 from seu_voice.srv import seu_voice as seu_voice_srv, seu_voiceRequest
 
-sys.path.append("/home/duo/GPSR_ws_zyd/GPSR_code/src")
+sys.path.append("/home/duo/GPSR_ws_zyd/catkin_robocup_2/src/GPSR_code/src")
 from common.camera import Camera
 
 # ==============================
 # 路径与导出配置（硬编码集中管理，方便统一修改）
 # ==============================
-RECORD_DIR = "/home/duo/GPSR_ws_zyd/GPSR_code/src/record"  # str: 任务日志与 PDF 的根目录
+RECORD_DIR = "/home/duo/GPSR_ws_zyd/catkin_robocup_2/src/GPSR_code/src/record"  # str: 任务日志与 PDF 的根目录
 LOG_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"  # str: 日志文件名时间格式，例如 "2026-03-03 18:00:01"
 COMMAND_PDF_PREFIX = "command"  # str: 命令执行结果 PDF 文件名前缀，示例 "command1.pdf"
 COMMAND_PDF_TITLE = "Successfully execute the command"  # str: 命令执行结果 PDF 第一行固定文案
