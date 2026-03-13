@@ -10,6 +10,7 @@ project(seu_look_for_object)
 find_package(catkin REQUIRED COMPONENTS
   actionlib
   actionlib_msgs
+  cv_bridge
   sensor_msgs
   tf2_geometry_msgs
   tf2_ros
@@ -116,6 +117,7 @@ catkin_package(
   CATKIN_DEPENDS
     actionlib
     actionlib_msgs
+    cv_bridge
     geometry_msgs
     message_runtime
     roscpp

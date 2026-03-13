@@ -129,44 +129,78 @@ def get_object_query_result(userdata):
         return None
 
 
-def resolve_query_object_label(userdata, fallback=""):
-    """从最近一次物体查询结果里提取“最终应使用的物体标签”。
+def resolve_object_query_result_label(query_result, fallback=""):
+    """从查询结果对象里提取“最终应使用的物体标签”。
 
     优先级：
     1. `resolved_label`：表示经过关系/排序/复核后最终选中的对象标签；
     2. `selected_object.label`：当服务尚未单独填充 resolved_label 时，回退到选中目标本身的标签；
     3. `fallback`：最后才使用动作参数中的原始文本。
     """
-    result = get_object_query_result(userdata)
-    if result is None:
+    if query_result is None:
         return fallback
-    if getattr(result, "resolved_label", ""):
-        return result.resolved_label
-    selected_object = getattr(result, "selected_object", None)
+    if getattr(query_result, "resolved_label", ""):
+        return query_result.resolved_label
+    selected_object = getattr(query_result, "selected_object", None)
     if selected_object is not None and getattr(selected_object, "label", ""):
         return selected_object.label
     return fallback
 
 
-def build_query_result_reply(info_kind, query_result):
-    """根据最近一次物体查询结果生成直接播报文本。
-
-    这里刻意不再经过旧的 `info_inform_service` 旁路拼接对象信息，
-    因为对象查询的结果已经在状态机本地可用，继续走服务只会把数据再拆散一次。
+def resolve_query_object_label(userdata, fallback=""):
+    """从最近一次物体查询结果里提取“最终应使用的物体标签”。
     """
-    if query_result is None or not getattr(query_result, "success", False):
-        return ""
+    return resolve_object_query_result_label(
+        get_object_query_result(userdata),
+        fallback=fallback,
+    )
 
-    if info_kind in ("query_result_label", "obj_name"):
-        label = query_result.resolved_label or query_result.selected_object.label
-        if not label:
-            return ""
-        return f"the target object is {label}"
 
-    if info_kind in ("query_result_count", "obj_count"):
-        return f"the target object count is {query_result.count}"
+def build_result_text(source_action, **fields):
+    """将汇报事实整理为稳定的半结构化文本。"""
+    lines = [f"source_action: {source_action}"]
+    for key, value in fields.items():
+        if value is None or value == "":
+            continue
+        if isinstance(value, bool):
+            value = str(value).lower()
+        lines.append(f"{key}: {value}")
+    return "\n".join(lines)
 
-    return ""
+
+def build_object_query_result_text(source_action, query_result, **extra_fields):
+    """将物体查询结果整理为供 info_inform 使用的结果字符串。"""
+    return build_result_text(
+        source_action,
+        success=getattr(query_result, "success", False),
+        status_code=getattr(query_result, "status_code", ""),
+        result_label=resolve_object_query_result_label(query_result),
+        count=getattr(query_result, "count", 0) if source_action == "count_object" else None,
+        **extra_fields,
+    )
+
+
+def build_person_count_result_text(feature):
+    """从当前找人计数结果生成汇报文本。"""
+    return build_result_text(
+        "look_for_person",
+        mode="count",
+        success=True,
+        person_feature=feature,
+        count=get_info("person_count"),
+    )
+
+
+def build_person_analyze_result_text(feature):
+    """从当前人物分析结果生成汇报文本。"""
+    result_fields = {
+        "success": True,
+        "requested_feature": feature,
+        "gesture": get_info("gesture"),
+        "gender": get_info("gender"),
+        "person_info": get_info("person_info"),
+    }
+    return build_result_text("person_analyze", **result_fields)
 
 
 def rotate_robot(vel_pub, angular_speed, duration):
@@ -635,7 +669,11 @@ class LookForPersonState(smach.State):
     """找人状态：调用视觉/感知服务按特征查找目标人物。"""
 
     def __init__(self, arg):
-        smach.State.__init__(self, outcomes=['success', 'failure'])
+        smach.State.__init__(
+            self,
+            outcomes=['success', 'failure'],
+            output_keys=['result_text'],
+        )
         self.target = arg[0]  # str: 找人特征（可能是人名、衣着、属性等）
         self.count = arg[1]  # str | int: 查找次序/人数参数，具体语义由 find_person 服务定义
 
@@ -665,6 +703,8 @@ class LookForPersonState(smach.State):
 
         word= "Successfully found person" +str(self.target)
         if result:
+            if self.count == "count":
+                userdata.result_text = build_person_count_result_text(self.target)
             speech_to_text(word)
             return 'success'
         else:
@@ -699,7 +739,11 @@ class PersonAnalyzeState(smach.State):
     """人物分析状态：调用人物属性分析服务。"""
 
     def __init__(self, arg):
-        smach.State.__init__(self, outcomes=['success', 'failure'])
+        smach.State.__init__(
+            self,
+            outcomes=['success', 'failure'],
+            output_keys=['result_text'],
+        )
         self.feature = arg[0]  # str: 需要分析的人物特征关键字
 
     def execute(self, userdata):
@@ -716,6 +760,7 @@ class PersonAnalyzeState(smach.State):
         result = self.person_analyse(self.feature)
         word = "Successfully analyse person" + str(self.feature)
         if result:
+            userdata.result_text = build_person_analyze_result_text(self.feature)
             speech_to_text(word,speak=False)
             return 'success'
         else:
@@ -752,7 +797,7 @@ class AnalyzeObjectState(smach.State):
         smach.State.__init__(
             self,
             outcomes=['success', 'failure'],
-            output_keys=['object_query_result'],
+            output_keys=['object_query_result', 'result_text'],
         )
         self.target_class = arg[0] if len(arg) > 0 else ""  # str: 目标类别，例如 cleaning_supply / snack / any
         self.metric = arg[1] if len(arg) > 1 else ""  # str: 分析指标，例如 biggest / heaviest
@@ -770,6 +815,13 @@ class AnalyzeObjectState(smach.State):
         result = self.call_service()
         userdata.object_query_result = result
         if result.success:
+            userdata.result_text = build_object_query_result_text(
+                "analyze_object",
+                result,
+                target_class=self.target_class,
+                metric=self.metric,
+                search_scope=self.search_scope,
+            )
             speech_to_text(f"Successfully analyzed {result.resolved_label}")
             return 'success'
         return 'failure'
@@ -803,7 +855,7 @@ class CountObjectState(smach.State):
         smach.State.__init__(
             self,
             outcomes=['success', 'failure'],
-            output_keys=['object_query_result'],
+            output_keys=['object_query_result', 'result_text'],
         )
         self.target_class = arg[0] if len(arg) > 0 else ""  # str: 目标类别
         self.search_scope = arg[1] if len(arg) > 1 else ""  # str: 搜索范围
@@ -818,6 +870,12 @@ class CountObjectState(smach.State):
         result = self.call_service()
         userdata.object_query_result = result
         if result.success:
+            userdata.result_text = build_object_query_result_text(
+                "count_object",
+                result,
+                target_class=self.target_class,
+                search_scope=self.search_scope,
+            )
             speech_to_text(f"Count finished, total {result.count}")
             return 'success'
         return 'failure'
@@ -897,7 +955,7 @@ class RelateObjectState(smach.State):
         smach.State.__init__(
             self,
             outcomes=['success', 'failure'],
-            output_keys=['object_query_result'],
+            output_keys=['object_query_result', 'result_text'],
         )
         self.target_class = arg[0] if len(arg) > 0 else ""  # str: 目标类别，可为 any
         self.reference_class = arg[1] if len(arg) > 1 else ""  # str: 参考物类别
@@ -916,6 +974,14 @@ class RelateObjectState(smach.State):
         result = self.call_service()
         userdata.object_query_result = result
         if result.success:
+            userdata.result_text = build_object_query_result_text(
+                "relate_object",
+                result,
+                target_class=self.target_class,
+                reference_class=self.reference_class,
+                relation=self.relation,
+                search_scope=self.search_scope,
+            )
             speech_to_text(
                 f"Successfully found {resolve_query_object_label(userdata, self.target_class)}"
             )
@@ -1110,9 +1176,12 @@ class InfoInformState(smach.State):
     """信息告知状态：根据任务类型返回结构化信息。"""
 
     def __init__(self,arg):
-        smach.State.__init__(self, 
-                            outcomes=['success', 'failure'],
-                            input_keys=['object_query_result'])
+        smach.State.__init__(
+            self,
+            outcomes=['success', 'failure'],
+            input_keys=['ori_command', 'result_text'],
+            output_keys=['info_kind'],
+        )
         self.info_kind = arg[0]  # str: 需要告知的信息类型（由上游动作参数提供）
 
     def execute(self,userdata):
@@ -1121,28 +1190,18 @@ class InfoInformState(smach.State):
             rospy.loginfo("debug=True，InfoInformState 直接返回 success")
             return 'success'
 
-        # 物体查询结果已在当前状态机内部可直接获取时，优先本地生成播报文本。
-        # 这样可以彻底避开旧 `obj_name/obj_count` ROS Param 旁路。
-        direct_reply = build_query_result_reply(
-            self.info_kind,
-            get_object_query_result(userdata),
-        )
-        if direct_reply:
-            rospy.loginfo("InfoInformState 直接播报最近一次物体查询结果：%s", direct_reply)
-            speech_to_text(direct_reply)
-            return 'success'
-
-        global ori_command
-        # 执行操作
-        question = ori_command
-        rospy.loginfo("The question is: %s",question)
-        result = self.answer(question)
+        userdata.info_kind = self.info_kind
+        question = userdata.ori_command
+        result_text = userdata.result_text
+        rospy.loginfo("The question is: %s", question)
+        rospy.loginfo("InfoInformState result_text: %s", result_text)
+        result = self.answer(question, userdata.info_kind, result_text)
         if result:
             return 'success'
         else:
             return 'failure'
 
-    def answer(self,question):
+    def answer(self, question, info_kind, result_text):
         """调用信息告知服务。"""
         srv_name = "info_inform_service"  # 当前服务的名称
         client = rospy.ServiceProxy(srv_name, seu_info_inform)  # 当前操作的服务
@@ -1150,8 +1209,9 @@ class InfoInformState(smach.State):
         rospy.loginfo(srv_name + ' available')
         try:
             request = seu_info_informRequest()
-            request.info_kind = self.info_kind
-            request.ori_command = question  
+            request.info_kind = info_kind
+            request.ori_command = question
+            request.result_text = result_text
             response = client.call(request)  # 返回值
             if response.state == True:
                 rospy.loginfo('Service call Succeeded: ' + srv_name)  # 调用成功
@@ -1323,6 +1383,8 @@ def create_state_machine(actions,ori_command):
     # 创建子状态机并挂载原始指令到 userdata，供部分状态读取。
     sm = smach.StateMachine(outcomes=['sub_success', 'sub_failure'])
     sm.userdata.ori_command = ori_command
+    sm.userdata.info_kind = ""
+    sm.userdata.result_text = ""
     sm.userdata.answer_input = ""
     sm.userdata.object_query_result = build_empty_object_query_result(
         status_code="INIT",
@@ -1361,29 +1423,35 @@ def create_state_machine(actions,ori_command):
                                        AnalyzeObjectState(arg),
                                        transitions={'success': state_names[i+1],
                                                     'failure': state_names[i]},
-                                       remapping={'object_query_result': 'object_query_result'})
+                                       remapping={'object_query_result': 'object_query_result',
+                                                  'result_text': 'result_text'})
             elif action == 'count_object':
                 smach.StateMachine.add(state_names[i],
                                        CountObjectState(arg),
                                        transitions={'success': state_names[i+1],
                                                     'failure': state_names[i]},
-                                       remapping={'object_query_result': 'object_query_result'})
+                                       remapping={'object_query_result': 'object_query_result',
+                                                  'result_text': 'result_text'})
             elif action == 'person_analyze':
                 smach.StateMachine.add(state_names[i],
                                        PersonAnalyzeState(arg),
                                        transitions={'success': state_names[i+1],
-                                                    'failure': state_names[i]})
+                                                    'failure': state_names[i]},
+                                       remapping={'result_text': 'result_text'})
             elif action == 'info_inform':
                 smach.StateMachine.add(state_names[i],
                                        InfoInformState(arg),
                                        transitions={'success': state_names[i+1],
                                                     'failure': state_names[i]},
-                                       remapping={'object_query_result': 'object_query_result'})
+                                       remapping={'ori_command': 'ori_command',
+                                                  'info_kind': 'info_kind',
+                                                  'result_text': 'result_text'})
             elif action == 'look_for_person':
                 smach.StateMachine.add(state_names[i],
                                        LookForPersonState(arg),
                                        transitions={'success': state_names[i+1],
-                                                    'failure': state_names[i]})
+                                                    'failure': state_names[i]},
+                                       remapping={'result_text': 'result_text'})
             elif action == 'find_object':
                 smach.StateMachine.add(state_names[i],
                                        FindObjectState(arg),
@@ -1395,7 +1463,8 @@ def create_state_machine(actions,ori_command):
                                        RelateObjectState(arg),
                                        transitions={'success': state_names[i+1],
                                                     'failure': state_names[i]},
-                                       remapping={'object_query_result': 'object_query_result'})
+                                       remapping={'object_query_result': 'object_query_result',
+                                                  'result_text': 'result_text'})
             elif action == 'follow':
                 smach.StateMachine.add(state_names[i],
                                        FollowState(arg),

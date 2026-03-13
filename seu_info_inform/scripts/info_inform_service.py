@@ -1,261 +1,295 @@
 #!/usr/bin/env python3
 # -*- coding: UTF-8 -*-
-import sys
-import time
-from pathlib import Path
-
-import smach
-import smach_ros
-COMMON_ROOT = Path(__file__).resolve().parents[2] / "common"
-if str(COMMON_ROOT) not in sys.path:
-    sys.path.insert(0, str(COMMON_ROOT))
-from common import *
-import requests
-import json
 import re
-import rospy
-import math
-import datetime
-from seu_info_inform.srv import *
-weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-def get_info(key):
-    try:
-        result = rospy.get_param(key)
-    except:
-        result = None
-    return result
 
-# 语音识别
-def srv_speech_recognition(task = "none"):
-    srv_name = 'speech_recognition_service'  # 当前服务的名称
-    client = rospy.ServiceProxy(srv_name, seu_speech_recognition)  # 当前操作的服务
-    rospy.wait_for_service(srv_name)  # 等待服务
-    rospy.loginfo(srv_name + ' available')
+import requests
+import rospy
+from seu_info_inform.srv import seu_info_inform, seu_info_informResponse
+from seu_speech_recognition.srv import (
+    seu_speech_recognition,
+    seu_speech_recognitionRequest,
+)
+from seu_voice.srv import seu_voice, seu_voiceRequest
+
+from info_inform_prompt_data import (
+    GEMINI_API_KEY,
+    GEMINI_API_VERSION,
+    GEMINI_BASE_URL,
+    GEMINI_MODEL_INFO_INFORM,
+    HTTP_TIMEOUT_SEC,
+    INFO_INFORM_ANSWER_OPENING,
+    INFO_INFORM_OUTPUT_RETRY_HINT,
+    MAX_RETRY_TIMES,
+    build_answer_prompt,
+    build_report_prompt,
+)
+
+
+GREEN_TAG = "\033[32m[info_inform]\033[0m"
+RED_TAG = "\033[31m[info_inform]\033[0m"
+SPEECH_PATTERN = re.compile(r"Speech:\s*(.*)", re.IGNORECASE | re.DOTALL)
+VOICE_SERVICE_NAME = "voice_service"
+voice_client = None
+
+
+def info_loginfo(msg, *args):
+    rospy.loginfo(f"{GREEN_TAG} {msg}", *args)
+
+
+def info_logerr(msg, *args):
+    rospy.logerr(f"{RED_TAG} {msg}", *args)
+
+
+def speak_text(text):
+    """Speak text through seu_voice."""
+    global voice_client
+
+    text = str(text).strip()
+    if not text:
+        return
+
+    if voice_client is None:
+        rospy.wait_for_service(VOICE_SERVICE_NAME)
+        voice_client = rospy.ServiceProxy(VOICE_SERVICE_NAME, seu_voice)
+        info_loginfo("%s available", VOICE_SERVICE_NAME)
+
+    response = voice_client.call(seu_voiceRequest(text=text))
+    if not response.state:
+        info_logerr("Voice service failed: %s", response.errormsg)
+
+
+def srv_speech_recognition(task="none"):
+    """Call the speech recognition service."""
+    srv_name = "speech_recognition_service"
+    client = rospy.ServiceProxy(srv_name, seu_speech_recognition)
+    rospy.wait_for_service(srv_name)
+    info_loginfo("%s available", srv_name)
     try:
         request = seu_speech_recognitionRequest()
         request.task = task
-        request.enable = False  # 请求值，加前缀防止重名
-        response = client.call(request)  # 返回值
-        if response.state == True:
-            rospy.loginfo('Service call Succeeded: ' + srv_name)  # 调用成功
+        request.enable = False
+        response = client.call(request)
+        if response.state:
             return response.word
-        else:
-            rospy.logerr("Service call Failed: " + srv_name)  # 调用失败
-            rospy.logerr("errormsg: " + response.errormsg)
-            return -1  # 调用失败，返回-1
-
-    except rospy.ServiceException as e:  # 调用失败，输出具体信息
-        print("Service call Failed: " + srv_name + ": %s" % e)
+        info_logerr("Speech recognition failed: %s", response.errormsg)
         return -1
-    
-
-# 语音输入
-class SpeechState(smach.State):
-    def __init__(self):
-        smach.State.__init__(self,
-                             outcomes=['success', 'failure'],
-                             output_keys=['speech_output'])  # 状态输出数据speech_output，即用户语音输入后的识别内容
-
-    def execute(self, userdata):
-        # 执行操作
-
-        word = srv_speech_recognition("answer")  # 调用语音识别服务
-
-        # word = 'navigate to the living room,meet Robin,and follow him' #测试用
-        if word != -1:
-            userdata.speech_output = word
-            rospy.loginfo('word: ' + word)
-            return 'success'
-        else:
-            return 'failure'
+    except rospy.ServiceException as exc:
+        info_logerr("Speech recognition service call failed: %s", exc)
+        return -1
 
 
-# 确认输入是否正确
-class VerifyState(smach.State):
-    def __init__(self):
-        smach.State.__init__(self,
-                             outcomes=['success', 'failure'],
-                             input_keys=['verify_input'],  # 状态输入数据verify_input，即上一状态（语音输入）的识别内容
-                             output_keys=['verify_output'])  # 状态输出数据verify_output，即用于分析的用户输入指令
+def build_generate_content_url(model):
+    return (
+        f"{GEMINI_BASE_URL.rstrip('/')}/{GEMINI_API_VERSION}/models/"
+        f"{model}:generateContent"
+    )
 
-    def execute(self, userdata):
-        # 执行操作
-        str = userdata.verify_input
-        verifystr = "the question is: " + str + ", is that right?"
-        # 语音播报
-        speech_to_text(verifystr)
-        rospy.loginfo('%s', verifystr)
-        result = self.verify()
 
-        if result:
-            userdata.verify_output = str
-            return 'success'
-        else:
-            return 'failure'
+def build_headers():
+    return {
+        "Authorization": f"Bearer {GEMINI_API_KEY}",
+        "Content-Type": "application/json",
+    }
 
-    def verify(self):
-        result = srv_speech_recognition()  # 调用语音识别服务
-        if result == -1:  # 识别为空，返回错误
-            return False
-        else:
-            rospy.loginfo('word: %s', result)
-            if 'yes' in result or 'ok' in result:  # 用户回答 “yes,you are right",即为正确，否则为识别有误
-                return True
-            else:
-                if 'right' in result:
-                    return True
-                else:
-                    return False
 
-class AnswerState(smach.State):
-    def __init__(self,arg):
-        smach.State.__init__(self,
-                            outcomes=['success', 'failure'],
-                            input_keys=['answer_input'])# 状态输入数据，即需要解答的问题，由语音识别得到
-        self.prompt = arg
+def build_payload(user_text):
+    return {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": user_text}],
+            }
+        ]
+    }
 
-    def execute(self,userdata):
-        # 执行操作
-        question = userdata.answer_input
-        rospy.loginfo("The question is: %s",question)
-        result = self.answer(question)
-        if result:
-            return 'success'
-        else:
-            return 'failure'
 
-    def answer(self,question):# 调用大模型服务解答问题
-        srv_name = "gemini_llm_service" # 当前服务的名称
-        client = rospy.ServiceProxy(srv_name, seu_llm)  # 当前操作的服务
-        rospy.wait_for_service(srv_name)  # 等待服务
-        rospy.loginfo(srv_name + ' available')
-        try:
-            request = seu_llmRequest()
-            request.task = 'answer'
-            request.command = f"{self.prompt},the question is {question}"
-            response = client.call(request)  # 返回值
-            if response.state == True:
-                rospy.loginfo('Service call Succeeded: ' + srv_name)  # 调用成功
-                rospy.loginfo('The answer is : %s',response.answer)
-                speech_to_text(response.answer) # 语音播报问题答案
-                return True
-            else:
-                rospy.logerr("Service call Failed: " + srv_name)  # 调用失败
-                rospy.logerr("errormsg: " + response.errormsg)
-                return False
+def extract_text_from_response_json(data):
+    """Extract text from Gemini JSON response."""
+    if not isinstance(data, dict):
+        return ""
 
-        except rospy.ServiceException as e:  # 调用失败，输出具体信息
-            print("Service call Failed: " + srv_name + ": %s" % e)
-            return False
+    candidates = data.get("candidates", [])
+    if not isinstance(candidates, list) or not candidates:
+        return ""
+
+    candidate = candidates[0]
+    if not isinstance(candidate, dict):
+        return ""
+
+    content = candidate.get("content", {})
+    if not isinstance(content, dict):
+        return ""
+
+    parts = content.get("parts", [])
+    if not isinstance(parts, list):
+        return ""
+
+    texts = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        part_text = part.get("text")
+        if not isinstance(part_text, str):
+            continue
+        cleaned = part_text.strip()
+        if not cleaned:
+            continue
+        if texts and texts[-1] == cleaned:
+            continue
+        texts.append(cleaned)
+
+    return "\n".join(texts).strip()
+
+
+def call_gemini_generate_content(prompt, model):
+    """Call Gemini and return a normalized result dict."""
+    result = {
+        "ok": False,
+        "status_code": None,
+        "text": "",
+        "raw_text": "",
+        "data": None,
+        "error": "",
+    }
+
+    try:
+        response = requests.post(
+            url=build_generate_content_url(model),
+            headers=build_headers(),
+            json=build_payload(prompt),
+            timeout=HTTP_TIMEOUT_SEC,
+        )
+    except requests.RequestException as exc:
+        result["error"] = f"RequestException: {exc}"
+        return result
+
+    result["status_code"] = response.status_code
+    result["raw_text"] = response.text
+
+    try:
+        result["data"] = response.json()
+    except ValueError:
+        result["data"] = None
+
+    result["text"] = extract_text_from_response_json(result["data"])
+    if not result["text"]:
+        result["text"] = (response.text or "").strip()
+
+    if response.status_code == 200 and result["text"]:
+        result["ok"] = True
+        return result
+
+    if response.status_code != 200:
+        result["error"] = f"HTTP {response.status_code}: {response.text}"
+    elif not result["text"]:
+        result["error"] = "Response text is empty after parsing."
+    return result
+
+
+def should_retry_same_prompt(api_result):
+    """Retry unchanged prompt on transport or 5xx failure."""
+    status_code = api_result.get("status_code")
+    error = str(api_result.get("error", ""))
+    if status_code is None and error.startswith("RequestException:"):
+        return True
+    if isinstance(status_code, int) and status_code >= 500:
+        return True
+    return False
+
+
+def extract_speech_text(response_text):
+    """Parse `Speech: ...` from the model output."""
+    if not response_text:
+        return ""
+    match = SPEECH_PATTERN.search(response_text)
+    if not match:
+        return ""
+    speech = match.group(1).strip()
+    speech = speech.replace("\n", " ").strip()
+    return speech
+
 
 class InfoInformService:
+    """Single-entry LLM-driven info_inform service."""
+
     def __init__(self):
+        self.model = GEMINI_MODEL_INFO_INFORM
 
-        self.person_count = 0
-        self.today_date = datetime.date.today().strftime("%Y-%m-%d")
-        self.current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        self.team_name = "southest at home"
-        self.team_country = "China"
-        self.team_affiliation = "Southeast university"
-        self.day_of_month = str(datetime.date.today().day)
-        self.day_of_week = weekdays[datetime.datetime.now().weekday()]
-        self.other = ""
-        self.ori_command = ""
-        self.obj_p = "biggest: water>cola=sprite>dishsoap>chip>lays>biscuit>cookie>handwash>shmpoo>bread； \
-                      heaviest： water>cola=sprite>handwash>shampoo>biscuit>chip=lays>bread>cookie；\
-                      thinest: lays>cola>sprite>water>dishsoap>chip>bread>biscuit>handwash>cookie>shampoo"
+    def _generate_speech(self, prompt):
+        """Generate one `Speech:` line from Gemini with format retries."""
+        current_prompt = prompt
+        for attempt in range(MAX_RETRY_TIMES):
+            api_result = call_gemini_generate_content(current_prompt, self.model)
+            info_loginfo("Gemini attempt %d/%d", attempt + 1, MAX_RETRY_TIMES)
+
+            if not api_result["ok"]:
+                info_logerr("Gemini request issue: %s", api_result["error"])
+                if should_retry_same_prompt(api_result):
+                    continue
+
+            speech = extract_speech_text(api_result["text"])
+            if speech:
+                info_loginfo("Parsed speech: %s", speech)
+                return speech
+
+            info_logerr("Failed to parse `Speech:` output. Retrying...")
+            current_prompt = (
+                f"[Retry hint]\n{INFO_INFORM_OUTPUT_RETRY_HINT}\n\n{prompt}"
+            )
+
+        return ""
+
+    def _answer_flow(self, req):
+        """Special flow for `answer`: ask question first, then answer via LLM."""
+        speak_text(INFO_INFORM_ANSWER_OPENING)
+        user_question = srv_speech_recognition("answer")
+        if user_question == -1 or not str(user_question).strip():
+            return seu_info_informResponse(False, "failed to hear the question")
+
+        prompt = build_answer_prompt(
+            ori_command=req.ori_command,
+            result_text=req.result_text,
+            user_question=str(user_question).strip(),
+        )
+        speech = self._generate_speech(prompt)
+        if not speech:
+            return seu_info_informResponse(False, "failed to generate answer speech")
+
+        speak_text(speech)
+        return seu_info_informResponse(True, "success")
+
+    def _report_flow(self, req):
+        """General flow for all non-answer info kinds."""
+        prompt = build_report_prompt(
+            info_kind=req.info_kind,
+            ori_command=req.ori_command,
+            result_text=req.result_text,
+        )
+        speech = self._generate_speech(prompt)
+        if not speech:
+            return seu_info_informResponse(False, "failed to generate report speech")
+
+        speak_text(speech)
+        return seu_info_informResponse(True, "success")
+
+    def callback(self, req):
+        info_loginfo(
+            "Received info_inform request: info_kind=%s, result_text=%s",
+            req.info_kind,
+            req.result_text,
+        )
+        if req.info_kind == "answer":
+            return self._answer_flow(req)
+        return self._report_flow(req)
 
 
-    def get_prompt(self):
-        return f"Some known information as follows, today date is {self.today_date},current time is {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}，our team name is {self.team_name},team country is {self.team_country},team affiliation is {self.team_affiliation},the day pf the mounth is {self.day_of_month},the day of the week is {self.day_of_week},{self.other}"
-
-    def inform(self,command):
-        srv_name = "gemini_llm_service"  # 当前服务的名称
-        client = rospy.ServiceProxy(srv_name, seu_llm)  # 当前操作的服务
-        rospy.wait_for_service(srv_name)  # 等待服务
-        rospy.loginfo(srv_name + ' available')
-        srv_response = seu_info_informResponse()
-        try:
-            request = seu_llmRequest()
-            request.task = 'answer'
-            request.command = f"{self.get_prompt()},somethong about object {self.obj_p},the ori command is {command},now i will answer to the target people,what should i answer"
-            print(request.command)
-            response = client.call(request)  # 返回值
-            if response.state == True:
-                rospy.loginfo('Service call Succeeded: ' + srv_name)  # 调用成功
-                rospy.loginfo('The answer is : %s', response.answer)
-                speech_to_text(response.answer)  # 语音播报问题答案
-                srv_response.errormsg = 'success'
-                srv_response.state = True
-                return srv_response
-            else:
-                rospy.logerr("Service call Failed: " + srv_name)  # 调用失败
-                rospy.logerr("errormsg: " + response.errormsg)
-                srv_response.errormsg = 'fail'
-                srv_response.state = False
-                return srv_response
-        except rospy.ServiceException as e:  # 调用失败，输出具体信息
-            print("Service call Failed: " + srv_name + ": %s" % e)
-            srv_response.errormsg = 'fail'
-            srv_response.state = False
-            return srv_response
-        
-    def answer(self,arg):
-        sm = smach.StateMachine(outcomes=['answer_success', 'answer_failure'])
-
-        # 根据列表中的动作，添加不同的动作状态
-        with sm:
-            smach.StateMachine.add('Speech_answer', SpeechState(),  # 首先语音输入问题
-                                   transitions={'success': 'Verify_answer',
-                                                'failure': 'Speech_answer'})
-            smach.StateMachine.add('Verify_answer', VerifyState(),  # 确认输入是否正确
-                                   transitions={'success': 'Answer',
-                                                'failure': 'Speech_answer'},
-                                   remapping={'verify_input': 'speech_output'})
-            smach.StateMachine.add('Answer', AnswerState(arg),  # 大模型解答问题
-                                   transitions={'success': 'answer_success',
-                                                'failure': 'answer_failure'},
-                                   remapping={'answer_input': 'verify_output'})
-        result = sm.execute()
-        rospy.loginfo("result:%s", result)
-        # 根据状态机运行结果应答
-        response = seu_info_informResponse()
-        if result == 'answer_success':
-            response.errormsg = 'success'
-            response.state = True
-        else:
-            response.errormsg = 'fail'
-            response.state = False
-
-        return response
-
-    def callback(self,req):
-        if req.info_kind =="person_count":
-            self.other = f"the target person counted is {get_info('person_count')}"
-        elif req.info_kind == "gesture":
-            self.other = f"the target people gesture is {get_info('gesture')},"
-        elif req.info_kind == "gender":
-            self.other = f"the target people gender is {get_info('gender')},"
-        elif req.info_kind == "obj_name":
-            self.other = f"the target obj is {get_info('obj_name')}"
-        elif req.info_kind == "obj_count":
-            self.other = f"the target obj is counted {get_info('obj_count')}"
-        elif req.info_kind == "answer":
-            response = self.answer(self.get_prompt())
-            #speech_to_text("good bye, i will to do next thing")
-            return response
-        elif req.info_kind == "introduce":
-            person_info = get_info('person_info')
-            if person_info is not None:
-                self.other = f"the target person is {person_info}"
-
-        response = self.inform(req.ori_command)
-        #speech_to_text("good bye, i will to do next thing")
-        return response
 if __name__ == "__main__":
-    rospy.init_node('info_inform_node')
+    rospy.init_node("info_inform_node")
     info_inform = InfoInformService()
-    server = rospy.Service("info_inform_service", seu_info_inform, info_inform.callback)
-    rospy.loginfo("info inform service ready")
-    #循环接收消息
+    server = rospy.Service(
+        "info_inform_service",
+        seu_info_inform,
+        info_inform.callback,
+    )
+    info_loginfo("info inform service ready")
     rospy.spin()

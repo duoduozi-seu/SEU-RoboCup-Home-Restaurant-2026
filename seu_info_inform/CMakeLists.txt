@@ -13,6 +13,8 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   roscpp
   rospy
+  seu_speech_recognition
+  seu_voice
   std_msgs
   message_generation
 )
@@ -107,7 +109,7 @@ generate_messages(
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES follow
-#  CATKIN_DEPENDS actionlib actionlib_msgs geometry_msgs message_generation message_generation robot_msgs roscpp rospy sensor_msgs std_msgs tf2 tf2_geometry_msgs tf2_ros
+#  CATKIN_DEPENDS actionlib actionlib_msgs geometry_msgs message_generation robot_msgs roscpp rospy sensor_msgs seu_speech_recognition seu_voice std_msgs tf2 tf2_geometry_msgs tf2_ros
 #  DEPENDS system_lib
 )
 

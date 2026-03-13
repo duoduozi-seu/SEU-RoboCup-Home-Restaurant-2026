@@ -1,5 +1,6 @@
 string info_kind
 string ori_command
+string result_text
 ---
 bool state
 string errormsg

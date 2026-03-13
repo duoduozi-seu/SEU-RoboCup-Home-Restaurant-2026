@@ -132,7 +132,8 @@ timeout_sec: 60.0"
 | `object_query_server.py` | `~find_frame_count` | `8` | FIND 每锚点检测帧数 |
 | `object_query_server.py` | `~find_hit_count` | `4` | FIND 每锚点最少命中帧数 |
 | `object_query_server.py` | `~count_frame_count` | `15` | COUNT 每锚点统计帧数 |
-| `object_query_server.py` | `~preview_enabled` | `True` | 是否弹 OpenCV 视频窗口 |
+| `object_query_server.py` | `~preview_enabled` | `True` | 是否发布预览图像话题 |
+| `object_query_server.py` | `~preview_image_topic` | `~preview_image` | 预览图像发布话题 |
 
 说明：节点会先尝试 `~realsense_width/~realsense_height/~realsense_fps` 指定的档位；若当前 D435i 或 USB 带宽不支持，会自动回退到 `640x480@30`。
 

@@ -51,9 +51,9 @@ action_dict = {
     # 告诉我某地怎么样的某物是什么
     "Tell me what is the heaviest snack on the pantry": "[['move_to', 'pantry'], ['analyze_object', 'snack', 'heaviest', 'pantry'], ['move_to','initial location'], ['info_inform', 'query_result_label']]",
     # 给某地某着装的人打招呼
-    "Introduce yourself to the person wearing an orange jacket in the office and say your teams affiliation":"[['move_to', 'office'], ['look_for_person', 'orange_jacket', 'nocount'], ['info_inform', 'introduce'], ['info_inform', 'team_affiliation']]",
+    "Introduce yourself to the person wearing an orange jacket in the office and say your teams affiliation":"[['move_to', 'office'], ['look_for_person', 'orange_jacket', 'nocount'], ['info_inform', 'introduce and team_affiliation']]",
     # 给某地某名字的人打招呼
-    "Salute Jane in the kitchen and say something about yourself":"[['move_to', 'kitchen'], ['look_for_person', 'Jane', 'nocount'], ['info_inform', 'salute'], ['info_inform', 'introduce']]",
+    "Salute Jane in the kitchen and say something about yourself":"[['move_to', 'kitchen'], ['look_for_person', 'Jane', 'nocount'], ['info_inform', 'salute and introduce']]",
     # 在某地找到某人然后再去某地找他
     "Meet Jane at the entrance then find them in the bedroom":"[['move_to','entrance'],['look_for_person','Jane','nocount'],['move_to','bedroom'],['look_for_person','Jane','nocount']]",
     # 统计某地某衣着人的数量

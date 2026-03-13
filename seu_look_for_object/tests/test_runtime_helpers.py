@@ -97,6 +97,19 @@ def _load_server_module():
     fake_visualization_msg_module = types.ModuleType("visualization_msgs.msg")
     fake_visualization_msg_module.Marker = FakeMarker
 
+    fake_sensor_pkg = types.ModuleType("sensor_msgs")
+    fake_sensor_msg_module = types.ModuleType("sensor_msgs.msg")
+    fake_sensor_msg_module.Image = type("Image", (), {})
+    fake_sensor_pkg.msg = fake_sensor_msg_module
+
+    fake_cv_bridge_module = types.ModuleType("cv_bridge")
+
+    class FakeCvBridge:
+        def cv2_to_imgmsg(self, image, encoding="bgr8"):
+            return {"image": image, "encoding": encoding}
+
+    fake_cv_bridge_module.CvBridge = FakeCvBridge
+
     fake_seu_msg_module = types.ModuleType("seu_look_for_object.msg")
     fake_seu_msg_module.ObjectDetectionResult = type("ObjectDetectionResult", (), {})
     fake_seu_msg_module.ObjectQueryResult = type("ObjectQueryResult", (), {})
@@ -118,6 +131,9 @@ def _load_server_module():
     sys.modules["geometry_msgs"] = fake_geometry_pkg
     sys.modules["geometry_msgs.msg"] = fake_geometry_msg_module
     sys.modules["visualization_msgs.msg"] = fake_visualization_msg_module
+    sys.modules["sensor_msgs"] = fake_sensor_pkg
+    sys.modules["sensor_msgs.msg"] = fake_sensor_msg_module
+    sys.modules["cv_bridge"] = fake_cv_bridge_module
     sys.modules["seu_look_for_object.msg"] = fake_seu_msg_module
     sys.modules["seu_look_for_object.srv"] = fake_srv_module
 
@@ -308,6 +324,27 @@ class RuntimeHelperTest(unittest.TestCase):
         self.assertIsNotNone(node.rs_pipeline)
         self.assertEqual(node.color_intrinsics, {"fx": 1.0, "fy": 1.0})
         self.assertTrue(any("已回退到 640x480@30" in message for message in warnings))
+
+    def test_publish_preview_image_uses_cv_bridge_and_publisher(self):
+        module = _load_server_module()
+        published_messages = []
+
+        class FakePublisher:
+            def publish(self, message):
+                published_messages.append(message)
+
+        node = module.ObjectQueryRosNode.__new__(module.ObjectQueryRosNode)
+        node.preview_enabled = True
+        node.preview_image_pub = FakePublisher()
+        node.cv_bridge = module.CvBridge()
+
+        frame = object()
+        node._publish_preview_image(frame)
+
+        self.assertEqual(
+            published_messages,
+            [{"image": frame, "encoding": "bgr8"}],
+        )
 
     def test_run_count_flow_sums_voted_counts_from_each_anchor(self):
         module = _load_server_module()
