@@ -122,6 +122,65 @@ def sample_depth_median(depth_frame, center_x, center_y, radius=DEPTH_SAMPLE_RAD
     return float(valid_depths[len(valid_depths) // 2])
 
 
+def render_debug_image(color_image, candidates, selected_candidate):
+    """把当前候选人与最终选中目标简单画到调试图像上。
+
+    约定：
+    1. 所有当前候选人都会画框，方便看见检测是否稳定；
+    2. 已满足挥手条件的人用黄色框；
+    3. 当前最终被选中的最近挥手人用绿色框；
+    4. 若没有候选人，直接返回原图副本。
+    """
+    import cv2
+
+    debug_image = color_image.copy()
+
+    for candidate in candidates:
+        box = candidate.get("box")
+        if box is None:
+            continue
+
+        x1, y1, x2, y2 = [int(value) for value in box]
+        is_selected = candidate is selected_candidate
+        is_waving = bool(candidate.get("is_waving", False))
+
+        color = (160, 160, 160)
+        thickness = 1
+        label = "person"
+
+        if is_waving:
+            color = (0, 255, 255)
+            thickness = 2
+            label = "waving"
+        if is_selected:
+            color = (0, 255, 0)
+            thickness = 3
+            label = "selected"
+
+        depth_m = float(candidate.get("depth_m", 0.0))
+        if depth_m > 0.0:
+            label = "{} {:.2f}m".format(label, depth_m)
+
+        cv2.rectangle(debug_image, (x1, y1), (x2, y2), color, thickness)
+        cv2.putText(
+            debug_image,
+            label,
+            (x1, max(15, y1 - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            color,
+            1,
+            cv2.LINE_AA,
+        )
+
+        depth_pixel = candidate.get("depth_pixel")
+        if depth_pixel is not None:
+            center_x, center_y = depth_pixel
+            cv2.circle(debug_image, (int(center_x), int(center_y)), 4, color, -1)
+
+    return debug_image
+
+
 def evaluate_simple_raise(raised_history):
     """简化挥手规则：最近若干帧里手举起次数足够多，就判为目标动作。"""
     if len(raised_history) < WAVE_HISTORY:
@@ -189,8 +248,12 @@ class WaveDetectorRuntime:
 
         current_candidates = [self.tracks[track_id] for track_id in current_track_ids]
         selected = select_nearest_waving_candidate(current_candidates)
+        debug_image = render_debug_image(color_image, current_candidates, selected)
         if selected is None:
-            return None
+            return {
+                "selected_candidate": None,
+                "debug_image": debug_image,
+            }
 
         depth_x, depth_y = selected["depth_pixel"]
         intrinsics = depth_frame.get_profile().as_video_stream_profile().get_intrinsics()
@@ -200,9 +263,12 @@ class WaveDetectorRuntime:
             float(selected["depth_m"]),
         )
         return {
-            "depth_m": float(selected["depth_m"]),
-            "camera_point": tuple(camera_point),
-            "depth_pixel": (int(depth_x), int(depth_y)),
+            "selected_candidate": {
+                "depth_m": float(selected["depth_m"]),
+                "camera_point": tuple(camera_point),
+                "depth_pixel": (int(depth_x), int(depth_y)),
+            },
+            "debug_image": debug_image,
         }
 
     @staticmethod

@@ -12,6 +12,18 @@ from geometry_msgs.msg import PoseStamped
 from tf.transformations import quaternion_from_euler
 
 
+def odometry_to_pose_stamped(odometry_message) -> PoseStamped:
+    """把导航系统发布的 Odometry 位姿提取成 PoseStamped。
+
+    餐厅题内部统一使用 ``PoseStamped`` 传递机器人当前位置，
+    这样状态机和动作节点都不用关心底层导航到底发的是哪种位姿消息。
+    """
+    pose = PoseStamped()
+    pose.header = odometry_message.header
+    pose.pose = odometry_message.pose.pose
+    return pose
+
+
 def build_customer_nav_pose(robot_pose: PoseStamped, person_point, stand_off_distance: float) -> PoseStamped:
     """根据顾客点和机器人当前位置，构造第一次靠近顾客的停靠位姿。
 

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""测试挥手候选目标筛选逻辑。"""
+"""测试挥手候选目标筛选与调试图像逻辑。"""
 
 import os
 import sys
 import unittest
+
+import numpy as np
 
 
 WORKSPACE_SRC = "/home/duo/GPSR_ws_zyd/catkin_robocup_2/src/GPSR_code/src"
@@ -12,7 +14,7 @@ SCRIPT_DIR = os.path.join(WORKSPACE_SRC, "seu_restaurant_wave", "scripts")
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from wave_detector_core import select_nearest_waving_candidate
+from wave_detector_core import render_debug_image, select_nearest_waving_candidate
 
 
 class WaveGeometryTest(unittest.TestCase):
@@ -38,6 +40,24 @@ class WaveGeometryTest(unittest.TestCase):
         ]
 
         self.assertIsNone(select_nearest_waving_candidate(candidates))
+
+    def test_render_debug_image_keeps_image_shape(self):
+        """调试图像渲染后应保持原始尺寸不变。"""
+        image = np.zeros((64, 96, 3), dtype=np.uint8)
+        candidate = {"box": (10, 8, 40, 50), "depth_m": 1.25, "is_waving": True}
+
+        rendered = render_debug_image(image, [candidate], candidate)
+
+        self.assertEqual(rendered.shape, image.shape)
+
+    def test_render_debug_image_marks_selected_candidate(self):
+        """存在目标时，调试图像应被画上可见标记。"""
+        image = np.zeros((64, 96, 3), dtype=np.uint8)
+        candidate = {"box": (10, 8, 40, 50), "depth_m": 1.25, "is_waving": True}
+
+        rendered = render_debug_image(image, [candidate], candidate)
+
+        self.assertGreater(int(rendered.sum()), 0)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ import actionlib
 import rospy
 
 from geometry_msgs.msg import PoseStamped, Twist
+from nav_msgs.msg import Odometry
 from seu_restaurant_msgs.msg import AlignAndTakeOrderAction, AlignAndTakeOrderResult
 from seu_speech_recognition.srv import seu_speech_recognition as SpeechSrv
 from seu_speech_recognition.srv import seu_speech_recognitionRequest
@@ -25,7 +26,8 @@ from person_align_core import classify_confirmation_text, select_nearest_person_
 
 
 ACTION_NAME = "align_and_take_order"
-ROBOT_POSE_TOPIC = "/robot_pose"
+# 当前导航系统输出的是 map 坐标系下的 Odometry，而不是 `/robot_pose`。
+ROBOT_POSE_TOPIC = "/map_to_baselink"
 CMD_VEL_TOPIC = "/cmd_vel"
 VOICE_SERVICE_NAME = "voice_service"
 SPEECH_SERVICE_NAME = "speech_recognition_service"
@@ -85,6 +87,14 @@ def sample_depth_median(depth_frame, center_x, center_y, radius=DEPTH_SAMPLE_RAD
         return 0.0
     values.sort()
     return float(values[len(values) // 2])
+
+
+def odometry_to_pose_stamped(odometry_message):
+    """把导航系统的 Odometry 提取成 PoseStamped。"""
+    pose = PoseStamped()
+    pose.header = odometry_message.header
+    pose.pose = odometry_message.pose.pose
+    return pose
 
 
 class LocalNearestPersonDetector:
@@ -202,7 +212,7 @@ class AlignAndTakeOrderActionServer:
         self.voice_client = None
         self.speech_client = None
 
-        rospy.Subscriber(ROBOT_POSE_TOPIC, PoseStamped, self._pose_callback, queue_size=1)
+        rospy.Subscriber(ROBOT_POSE_TOPIC, Odometry, self._pose_callback, queue_size=1)
         self.cmd_vel_pub = rospy.Publisher(CMD_VEL_TOPIC, Twist, queue_size=10)
 
         self.server = actionlib.SimpleActionServer(
@@ -216,7 +226,7 @@ class AlignAndTakeOrderActionServer:
 
     def _pose_callback(self, message):
         """缓存机器人当前位姿。"""
-        self.current_pose = message
+        self.current_pose = odometry_to_pose_stamped(message)
 
     def _stop_robot(self):
         """停车。"""
@@ -298,7 +308,8 @@ class AlignAndTakeOrderActionServer:
 
         try:
             if self.current_pose is None:
-                self.current_pose = rospy.wait_for_message(ROBOT_POSE_TOPIC, PoseStamped, timeout=2.0)
+                odometry_message = rospy.wait_for_message(ROBOT_POSE_TOPIC, Odometry, timeout=2.0)
+                self.current_pose = odometry_to_pose_stamped(odometry_message)
 
             aligned = self._align_to_customer(goal.align_timeout_sec)
             if not aligned:
@@ -322,7 +333,8 @@ class AlignAndTakeOrderActionServer:
                     continue
 
                 if self.current_pose is None:
-                    self.current_pose = rospy.wait_for_message(ROBOT_POSE_TOPIC, PoseStamped, timeout=2.0)
+                    odometry_message = rospy.wait_for_message(ROBOT_POSE_TOPIC, Odometry, timeout=2.0)
+                    self.current_pose = odometry_to_pose_stamped(odometry_message)
                 result.success = True
                 result.order_text = order_text
                 result.rounds_used = round_index + 1

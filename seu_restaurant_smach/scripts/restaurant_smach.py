@@ -22,6 +22,7 @@ import smach
 import smach_ros
 
 from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Odometry
 from seu_restaurant_msgs.msg import (
     AlignAndTakeOrderAction,
     AlignAndTakeOrderGoal,
@@ -39,14 +40,16 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from restaurant_states import build_customer_nav_pose
+from restaurant_states import build_customer_nav_pose, odometry_to_pose_stamped
 
 
 WAVE_ACTION_NAME = "find_waving_customer"
 NAV_ACTION_NAME = "restaurant_nav"
 INTERACTION_ACTION_NAME = "align_and_take_order"
 VOICE_SERVICE_NAME = "voice_service"
-ROBOT_POSE_TOPIC = "/robot_pose"
+# 当前导航系统没有发布 `/robot_pose`，而是通过 `/map_to_baselink`
+# 提供机器人在 map 坐标系下的里程计位姿。
+ROBOT_POSE_TOPIC = "/map_to_baselink"
 
 BAR_TARGET_NAME = "StartPoint"
 WAVE_TIMEOUT_SEC = 45.0
@@ -126,7 +129,8 @@ class BuildCustomerNavPoseState(smach.State):
 
     def execute(self, userdata):
         try:
-            robot_pose = rospy.wait_for_message(ROBOT_POSE_TOPIC, PoseStamped, timeout=2.0)
+            robot_odom = rospy.wait_for_message(ROBOT_POSE_TOPIC, Odometry, timeout=2.0)
+            robot_pose = odometry_to_pose_stamped(robot_odom)
             userdata.customer_nav_pose = build_customer_nav_pose(
                 robot_pose,
                 userdata.customer_point_map,

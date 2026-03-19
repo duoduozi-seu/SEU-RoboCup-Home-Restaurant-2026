@@ -4,6 +4,7 @@ project(seu_restaurant_interaction)
 find_package(catkin REQUIRED COMPONENTS
   actionlib
   geometry_msgs
+  nav_msgs
   rospy
   sensor_msgs
   std_msgs
@@ -15,5 +16,5 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 catkin_package(
-  CATKIN_DEPENDS actionlib geometry_msgs rospy sensor_msgs std_msgs tf tf2_ros seu_restaurant_msgs seu_speech_recognition seu_voice
+  CATKIN_DEPENDS actionlib geometry_msgs nav_msgs rospy sensor_msgs std_msgs tf tf2_ros seu_restaurant_msgs seu_speech_recognition seu_voice
 )

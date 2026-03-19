@@ -215,7 +215,65 @@ catkin_make --pkg seu_restaurant_msgs seu_restaurant_wave seu_restaurant_interac
 - 本次新加的餐厅题相关包没有出现构建失败。
 
 
-## 5. 目前已知状态
+## 5. 2026-03-20 增量修改
+
+### 5.1 挥手搜索调试图像
+
+根据联调需求，已为挥手搜索节点增加最简 ROS 调试图像发布能力：
+
+- topic：`/restaurant_wave/debug_image`
+
+实现方式：
+
+- 不弹出本地窗口；
+- 由 `seu_restaurant_wave/scripts/find_waving_customer_action_server.py` 发布 `sensor_msgs/Image`；
+- 图像由 `seu_restaurant_wave/scripts/wave_detector_core.py` 内部渲染；
+- 当前帧有人体候选时，会画简单框和深度文字；
+- 当前最终选中的最近挥手人会用更明显的绿色框标记。
+
+查看方式：
+
+- `rqt_image_view /restaurant_wave/debug_image`
+
+本次修改已重新通过：
+
+- `python3 -m unittest seu_restaurant_wave.tests.test_wave_geometry`
+- `python3 -m py_compile seu_restaurant_wave/scripts/wave_detector_core.py seu_restaurant_wave/scripts/find_waving_customer_action_server.py`
+
+
+### 5.2 餐厅题位姿源修正
+
+联调时发现餐厅题新代码原先错误地等待 `/robot_pose`，但当前导航系统 `tracer_nav` 实际没有发布该 topic。
+
+实际可用位姿源是：
+
+- `/map_to_baselink`，消息类型为 `nav_msgs/Odometry`
+
+因此已做最小修正：
+
+- `seu_restaurant_wave/scripts/find_waving_customer_action_server.py`
+- `seu_restaurant_interaction/scripts/align_and_take_order_action_server.py`
+- `seu_restaurant_smach/scripts/restaurant_smach.py`
+
+统一改为：
+
+- 从 `/map_to_baselink` 读取机器人当前位姿；
+- 先按 `Odometry` 接收；
+- 再在代码内部转换成 `PoseStamped`，保持上层流程不变。
+
+补充说明：
+
+- 这次没有改导航下游逻辑；
+- 只是把餐厅题自己的位姿输入源接到当前真实导航系统上。
+
+本次修改已重新通过：
+
+- `python3 -m unittest seu_restaurant_smach.tests.test_build_customer_nav_pose seu_restaurant_interaction.tests.test_confirmation_parser seu_restaurant_wave.tests.test_wave_geometry seu_nav.tests.test_nav_action_core`
+- `python3 -m py_compile seu_restaurant_smach/scripts/restaurant_states.py seu_restaurant_smach/scripts/restaurant_smach.py seu_restaurant_interaction/scripts/align_and_take_order_action_server.py seu_restaurant_wave/scripts/find_waving_customer_action_server.py`
+- `catkin_make --pkg seu_restaurant_msgs seu_restaurant_wave seu_restaurant_interaction seu_restaurant_smach seu_nav`
+
+
+## 6. 目前已知状态
 
 - 餐厅题主流程代码已经齐。
 - `seu_nav` 的 action 包装已经齐。
@@ -224,7 +282,7 @@ catkin_make --pkg seu_restaurant_msgs seu_restaurant_wave seu_restaurant_interac
 - 无地图导航的真正底层逻辑仍由外部已有导航能力负责，这一层没有被改写。
 
 
-## 6. 如果下个线程继续做，建议优先检查
+## 7. 如果下个线程继续做，建议优先检查
 
 1. 在真实机器人上联调相机帧名是否和 `camera1_color_optical_frame` 一致。
 2. 联调 `task_nav` 的 `TaskNavGoal` 字段和当前外部导航实现是否完全匹配。
@@ -233,9 +291,8 @@ catkin_make --pkg seu_restaurant_msgs seu_restaurant_wave seu_restaurant_interac
 5. 若以后要加抓取，只需要把 `SKIP_GRASP_PLACEHOLDER` 替换成真实 action 状态即可。
 
 
-## 7. 本交接文档位置
+## 8. 本交接文档位置
 
 本文件路径：
 
 - `handoffs/restaurant_progress_2026-03-19.md`
-
