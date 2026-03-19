@@ -1,6 +1,6 @@
-# 2026 SEU RoboCup@Home GPSR Code
+# 2026 SEU RoboCup@Home Restaurant Code
 
-东南大学自动化学院 RoboCup@Home GPSR 赛题代码（2026 版）
+东南大学自动化学院 RoboCup@Home Restaurant 赛题代码
 
 <!-- <div align="center">
   <span style="font-family: 'Times New Roman', 'SimSun', serif; font-size: 20px;">周艺舵</span><br/>

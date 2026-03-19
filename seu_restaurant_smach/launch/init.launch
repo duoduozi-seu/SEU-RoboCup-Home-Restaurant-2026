@@ -1,0 +1,25 @@
+<launch>
+    <!-- 语音识别服务：桌边接单时直接调用 -->
+    <node pkg="seu_speech_recognition" type="speech_service.py" name="speech_recognition_service" output="screen"/>
+
+    <!-- 语音播报服务：桌边问单、吧台复述、最终播报都会调用 -->
+    <node pkg="seu_voice" type="voice_service.py" name="voice_service_node" output="screen">
+        <param name="service_name" value="voice_service" />
+        <param name="model_path" value="$(find seu_voice)/models/en_US-lessac-medium.onnx" />
+        <param name="config_path" value="$(find seu_voice)/models/en_US-lessac-medium.onnx.json" />
+        <param name="player_cmd" value="aplay -q" />
+        <param name="tmp_dir" value="/tmp/seu_voice" />
+    </node>
+
+    <!-- 餐厅题导航 action 包装层：对上游提供 NAME / POSE 双模式导航 -->
+    <node pkg="seu_nav" type="nav_action_server.py" name="restaurant_nav_action_server" output="screen"/>
+
+    <!-- 原地旋转并寻找最近挥手顾客 -->
+    <node pkg="seu_restaurant_wave" type="find_waving_customer_action_server.py" name="find_waving_customer_action_server" output="screen"/>
+
+    <!-- 到达顾客附近后的局部对正与接单 -->
+    <node pkg="seu_restaurant_interaction" type="align_and_take_order_action_server.py" name="align_and_take_order_action_server" output="screen"/>
+
+    <!-- 餐厅题主状态机 -->
+    <node pkg="seu_restaurant_smach" type="restaurant_smach.py" name="restaurant_smach" output="screen"/>
+</launch>

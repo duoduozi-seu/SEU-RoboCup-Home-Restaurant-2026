@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/duo/anaconda3/envs/gpsr_perception310/bin/python
 # -*- coding: utf-8 -*-
 """餐厅题挥手检测核心工具。
 
@@ -14,7 +14,8 @@ from typing import Iterable, Optional
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-POSE_MODEL_PATH = os.path.join(os.path.dirname(SCRIPT_DIR), "models", "yolo26m-pose.pt")
+# POSE_MODEL_PATH = os.path.join(os.path.dirname(SCRIPT_DIR), "models", "yolo26m-pose.pt")
+POSE_MODEL_PATH = '/home/duo/GPSR_ws_zyd/res_demo/yolo26m-pose.pt'
 
 FRAME_WIDTH = 848
 FRAME_HEIGHT = 480

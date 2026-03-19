@@ -1,7 +1,0 @@
-string target_class
-string reference_class
-string relation
-string search_scope
-float32 timeout_sec
----
-ObjectQueryResult result
