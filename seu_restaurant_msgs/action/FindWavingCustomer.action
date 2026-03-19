@@ -1,0 +1,11 @@
+# Goal
+float32 timeout_sec
+float32 angular_speed_rad_s
+---
+# Result
+bool success
+string error_msg
+geometry_msgs/Point person_point_map
+float32 depth_m
+---
+# Feedback

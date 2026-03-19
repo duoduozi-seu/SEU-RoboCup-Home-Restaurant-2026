@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>seu_restaurant_smach</name>
+  <version>0.0.1</version>
+  <description>餐厅题主状态机包。</description>
+
+  <maintainer email="duo@todo.todo">duo</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>actionlib</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>rospy</build_depend>
+  <build_depend>smach</build_depend>
+  <build_depend>smach_ros</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>tf</build_depend>
+  <build_depend>seu_nav</build_depend>
+  <build_depend>seu_restaurant_msgs</build_depend>
+  <build_depend>seu_voice</build_depend>
+
+  <build_export_depend>actionlib</build_export_depend>
+  <build_export_depend>geometry_msgs</build_export_depend>
+  <build_export_depend>rospy</build_export_depend>
+  <build_export_depend>smach</build_export_depend>
+  <build_export_depend>smach_ros</build_export_depend>
+  <build_export_depend>std_msgs</build_export_depend>
+  <build_export_depend>tf</build_export_depend>
+  <build_export_depend>seu_nav</build_export_depend>
+  <build_export_depend>seu_restaurant_msgs</build_export_depend>
+  <build_export_depend>seu_voice</build_export_depend>
+
+  <exec_depend>actionlib</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>smach</exec_depend>
+  <exec_depend>smach_ros</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>tf</exec_depend>
+  <exec_depend>seu_nav</exec_depend>
+  <exec_depend>seu_restaurant_msgs</exec_depend>
+  <exec_depend>seu_voice</exec_depend>
+</package>

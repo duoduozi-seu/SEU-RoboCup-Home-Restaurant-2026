@@ -1,0 +1,14 @@
+# Goal
+uint8 TARGET_MODE_NAME=1
+uint8 TARGET_MODE_POSE=2
+uint8 target_mode
+string target_name
+geometry_msgs/PoseStamped nav_pose
+geometry_msgs/PoseStamped pid_pose
+float32 timeout_sec
+---
+# Result
+bool success
+string error_msg
+---
+# Feedback

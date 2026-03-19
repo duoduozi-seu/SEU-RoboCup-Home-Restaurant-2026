@@ -1,0 +1,14 @@
+# Goal
+string ask_text
+uint8 max_rounds
+float32 align_timeout_sec
+float32 dialog_timeout_sec
+---
+# Result
+bool success
+string error_msg
+geometry_msgs/PoseStamped service_pose_map
+string order_text
+uint8 rounds_used
+---
+# Feedback

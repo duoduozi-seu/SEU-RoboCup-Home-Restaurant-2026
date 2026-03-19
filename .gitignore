@@ -14,7 +14,7 @@ logs/
 .vscode/
 .idea/
 .VSCodeCounter/
-
+.codex/
 # Python cache
 **/__pycache__/
 **/*.pyc
