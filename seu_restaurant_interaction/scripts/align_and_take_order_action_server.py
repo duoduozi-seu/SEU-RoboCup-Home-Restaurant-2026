@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/duo/anaconda3/envs/gpsr_perception310/bin/python
 # -*- coding: utf-8 -*-
 """餐厅题桌边微调与接单 action server。"""
 

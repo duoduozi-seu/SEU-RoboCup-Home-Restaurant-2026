@@ -3,15 +3,16 @@
 """
 餐厅任务的核心状态机。
 按照比赛的标准执行顺序，该脚本组织了以下核心流程：
-1. 寻找挥手的顾客 (FIND_WAVING_CUSTOMER)
-2. 基于检测点计算导航位姿 (BUILD_CUSTOMER_NAV_POSE)
-3. 导航到顾客身旁 (NAV_TO_CUSTOMER)
-4. 对准顾客并开启交互点餐 (ALIGN_AND_TAKE_ORDER)
-5. 返回吧台进行汇报 (NAV_TO_BAR)
-6. 在吧台复述读取到的订单 (SPEAK_ORDER_AT_BAR)
-7. 物品抓取（当前占位）(SKIP_GRASP_PLACEHOLDER)
-8. 返回顾客处送餐 (NAV_BACK_TO_CUSTOMER)
-9. 播报最终完成语 (FINAL_DELIVER_SPEAK)
+1. 启动时记录吧台位姿 (CAPTURE_BAR_POSE)
+2. 寻找挥手的顾客 (FIND_WAVING_CUSTOMER)
+3. 基于检测点计算导航位姿 (BUILD_CUSTOMER_NAV_POSE)
+4. 导航到顾客身旁 (NAV_TO_CUSTOMER)
+5. 对准顾客并开启交互点餐 (ALIGN_AND_TAKE_ORDER)
+6. 返回吧台进行汇报 (NAV_TO_BAR)
+7. 在吧台复述读取到的订单 (SPEAK_ORDER_AT_BAR)
+8. 物品抓取（当前占位）(SKIP_GRASP_PLACEHOLDER)
+9. 返回顾客处送餐 (NAV_BACK_TO_CUSTOMER)
+10. 播报最终完成语 (FINAL_DELIVER_SPEAK)
 """
 
 import os
@@ -41,7 +42,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from restaurant_states import build_customer_nav_pose, odometry_to_pose_stamped
+from restaurant_states import build_customer_nav_pose, odometry_to_pose_stamped, reverse_pose_orientation
 
 # --- 配置常量 ---
 WAVE_ACTION_NAME = "find_waving_customer"    # 找寻挥手顾客的 Action 服务名
@@ -53,7 +54,6 @@ VOICE_SERVICE_NAME = "voice_service"         # 用于 TTS 播报的消息服务
 # 机器人在 map 坐标系下的实际位姿是通过 /map_to_baselink（里程计类型）发布的。
 ROBOT_POSE_TOPIC = "/map_to_baselink"
 
-BAR_TARGET_NAME = "StartPoint"               # 吧台在地图中的固定点名称
 WAVE_TIMEOUT_SEC = 45.0                      # 搜寻挥手的最大尝试时间
 WAVE_ANGULAR_SPEED_RAD_S = 0.15              # 旋转搜索时的角速度
 NAV_TIMEOUT_SEC = 120.0                      # 每次导航的最大允许时长
@@ -103,6 +103,23 @@ def say_once(text: str):
         raise RuntimeError("voice service failed: {}".format(response.errormsg))
 
 # --- 状态类实现 ---
+
+class CaptureBarPoseState(smach.State):
+    """状态逻辑：启动时记录回吧台要用的位姿。"""
+    def __init__(self):
+        smach.State.__init__(self, outcomes=["success", "failure"], output_keys=["bar_pose_map"])
+
+    def execute(self, userdata):
+        try:
+            robot_odom = rospy.wait_for_message(ROBOT_POSE_TOPIC, Odometry, timeout=2.0)
+            current_pose = odometry_to_pose_stamped(robot_odom)
+            # 启动时机器人背朝吧台，这里先把朝向反过来。
+            userdata.bar_pose_map = reverse_pose_orientation(current_pose)
+            # 保存回吧台位姿，后面返回吧台时直接复用。
+            return "success"
+        except Exception as e:
+            rospy.logerr("CaptureBarPoseState execution failed: %s", str(e))
+            return "failure"
 
 class FindWavingCustomerState(smach.State):
     """
@@ -315,7 +332,15 @@ def main():
 
     # 使用上下文管理器进行状态节点的添加 (SM Diagram)
     with sm:
-        # --- [1] 搜寻阶段 ---
+        # --- [1] 启动记录吧台位姿 ---
+        # 启动时先保存一个面朝吧台的位姿，后面返回吧台直接使用。
+        smach.StateMachine.add(
+            "CAPTURE_BAR_POSE",
+            CaptureBarPoseState(),
+            transitions={"success": "FIND_WAVING_CUSTOMER", "failure": "task_failure"},
+        )
+
+        # --- [2] 搜寻阶段 ---
         # 找到正在挥手的顾客，失败则整个大任务报废退出
         smach.StateMachine.add(
             "FIND_WAVING_CUSTOMER",
@@ -323,7 +348,7 @@ def main():
             transitions={"success": "BUILD_CUSTOMER_NAV_POSE", "failure": "task_failure"},
         )
         
-        # --- [2] 路径规划 ---
+        # --- [3] 路径规划 ---
         # 基于第一步的点计算具体的停车横纵坐标和朝向
         smach.StateMachine.add(
             "BUILD_CUSTOMER_NAV_POSE",
@@ -331,7 +356,7 @@ def main():
             transitions={"success": "NAV_TO_CUSTOMER", "failure": "task_failure"},
         )
         
-        # --- [3] 接近顾客 ---
+        # --- [4] 接近顾客 ---
         # 第一次主导航，去刚才算出来的位姿
         smach.StateMachine.add(
             "NAV_TO_CUSTOMER",
@@ -339,7 +364,7 @@ def main():
             transitions={"success": "ALIGN_AND_TAKE_ORDER", "failure": "task_failure"},
         )
         
-        # --- [4] 互动获取订单 ---
+        # --- [5] 互动获取订单 ---
         # 对准顾客并听取订单信息，成功后会拿到 service_pose_map (对准后的精准位姿)
         smach.StateMachine.add(
             "ALIGN_AND_TAKE_ORDER",
@@ -347,15 +372,15 @@ def main():
             transitions={"success": "NAV_TO_BAR", "failure": "task_failure"},
         )
         
-        # --- [5] 返回汇报 ---
-        # 导航回吧台（StartPoint）
+        # --- [6] 返回汇报 ---
+        # 使用启动时保存的吧台位姿返回吧台
         smach.StateMachine.add(
             "NAV_TO_BAR",
-            NavigateNameState(BAR_TARGET_NAME),
+            NavigatePoseState("bar_pose_map"),
             transitions={"success": "SPEAK_ORDER_AT_BAR", "failure": "task_failure"},
         )
         
-        # --- [6] 复述订单 ---
+        # --- [7] 复述订单 ---
         # 在吧台播报识别到的内容
         smach.StateMachine.add(
             "SPEAK_ORDER_AT_BAR",
@@ -363,7 +388,7 @@ def main():
             transitions={"success": "SKIP_GRASP_PLACEHOLDER", "failure": "task_failure"},
         )
         
-        # --- [7] 物品上车 ---
+        # --- [8] 物品上车 ---
         # 业务占位点，成功后跳转至返回流程
         smach.StateMachine.add(
             "SKIP_GRASP_PLACEHOLDER",
@@ -371,7 +396,7 @@ def main():
             transitions={"success": "NAV_BACK_TO_CUSTOMER"},
         )
         
-        # --- [8] 送餐返回 ---
+        # --- [9] 送餐返回 ---
         # 使用第 4 步存下的精准位姿 service_pose_map 导航回顾客面前
         smach.StateMachine.add(
             "NAV_BACK_TO_CUSTOMER",
@@ -379,7 +404,7 @@ def main():
             transitions={"success": "FINAL_DELIVER_SPEAK", "failure": "task_failure"},
         )
         
-        # --- [9] 任务结束 ---
+        # --- [10] 任务结束 ---
         # 播报结语，转入最终 task_success 节点
         smach.StateMachine.add(
             "FINAL_DELIVER_SPEAK",

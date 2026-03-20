@@ -9,7 +9,7 @@
 import math
 
 from geometry_msgs.msg import PoseStamped
-from tf.transformations import quaternion_from_euler
+from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 
 def odometry_to_pose_stamped(odometry_message) -> PoseStamped:
@@ -22,6 +22,29 @@ def odometry_to_pose_stamped(odometry_message) -> PoseStamped:
     pose.header = odometry_message.header
     pose.pose = odometry_message.pose.pose
     return pose
+
+
+def reverse_pose_orientation(pose: PoseStamped) -> PoseStamped:
+    """保持位置不变，并把机器人朝向反过来。"""
+    current_yaw = euler_from_quaternion([
+        pose.pose.orientation.x,
+        pose.pose.orientation.y,
+        pose.pose.orientation.z,
+        pose.pose.orientation.w,
+    ])[2]
+    reversed_yaw = current_yaw + math.pi
+
+    reversed_pose = PoseStamped()
+    reversed_pose.header = pose.header
+    reversed_pose.pose.position.x = pose.pose.position.x
+    reversed_pose.pose.position.y = pose.pose.position.y
+    reversed_pose.pose.position.z = pose.pose.position.z
+    quaternion = quaternion_from_euler(0.0, 0.0, reversed_yaw)
+    reversed_pose.pose.orientation.x = quaternion[0]
+    reversed_pose.pose.orientation.y = quaternion[1]
+    reversed_pose.pose.orientation.z = quaternion[2]
+    reversed_pose.pose.orientation.w = quaternion[3]
+    return reversed_pose
 
 
 def build_customer_nav_pose(robot_pose: PoseStamped, person_point, stand_off_distance: float) -> PoseStamped:
