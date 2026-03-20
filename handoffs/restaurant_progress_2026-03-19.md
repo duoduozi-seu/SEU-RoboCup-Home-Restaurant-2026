@@ -240,6 +240,13 @@ catkin_make --pkg seu_restaurant_msgs seu_restaurant_wave seu_restaurant_interac
 - `python3 -m unittest seu_restaurant_wave.tests.test_wave_geometry`
 - `python3 -m py_compile seu_restaurant_wave/scripts/wave_detector_core.py seu_restaurant_wave/scripts/find_waving_customer_action_server.py`
 
+补充：
+
+- wave 节点后续又增加了 RViz marker 发布；
+- 当前目标人的地图点会持续发布到 `/restaurant_wave/target_marker`；
+- 类型为 `visualization_msgs/Marker`；
+- 没有目标时会主动发 `DELETE` 清掉旧 marker。
+
 
 ### 5.2 餐厅题位姿源修正
 
@@ -271,6 +278,57 @@ catkin_make --pkg seu_restaurant_msgs seu_restaurant_wave seu_restaurant_interac
 - `python3 -m unittest seu_restaurant_smach.tests.test_build_customer_nav_pose seu_restaurant_interaction.tests.test_confirmation_parser seu_restaurant_wave.tests.test_wave_geometry seu_nav.tests.test_nav_action_core`
 - `python3 -m py_compile seu_restaurant_smach/scripts/restaurant_states.py seu_restaurant_smach/scripts/restaurant_smach.py seu_restaurant_interaction/scripts/align_and_take_order_action_server.py seu_restaurant_wave/scripts/find_waving_customer_action_server.py`
 - `catkin_make --pkg seu_restaurant_msgs seu_restaurant_wave seu_restaurant_interaction seu_restaurant_smach seu_nav`
+
+
+### 5.3 wave 节点改为直接按 `base_link` 计算
+
+进一步联调时发现，现场 ROS 图中没有任何 camera optical frame 的 TF。
+
+用户要求采用最简单办法，不额外发布相机 TF，因此 wave 节点改成：
+
+- 直接假设相机与 `base_link` 共点；
+- 不再依赖 `camera_frame -> map` 的 TF；
+- 先把 RealSense 光学坐标 `(x_right, y_down, z_forward)` 换算成 `base_link` 坐标；
+- 再直接从 `base_link` 转到 `map`。
+
+对应修改文件：
+
+- `seu_restaurant_wave/scripts/find_waving_customer_action_server.py`
+
+新增逻辑：
+
+- `camera_point_to_base_link_point(...)`
+
+当前轴换算关系：
+
+- `base_link.x = camera.z`
+- `base_link.y = -camera.x`
+- `base_link.z = -camera.y`
+
+这样做的效果：
+
+- 只要当前导航 TF 树里已有 `map -> base_link`，wave 节点就能返回地图点；
+- 不需要 ROS 相机节点，也不需要 camera optical frame 的 TF；
+- 精度上属于“相机与底盘中心共点”的简化近似，后面若要更准再补真实外参。
+
+本次修改已重新通过：
+
+- `python3 -m unittest seu_restaurant_wave.tests.test_wave_geometry`
+- `python3 -m py_compile seu_restaurant_wave/scripts/find_waving_customer_action_server.py`
+- `catkin_make -DROS_EDITION=ROS1 --pkg seu_restaurant_wave seu_restaurant_msgs`
+
+补充根因：
+
+- 现场虽然能看到 green box，说明挥手候选已经被选中；
+- 但原先后处理仍试图使用 `tf2_ros.Buffer.transform(PointStamped, "map")`；
+- Python 运行时实际抛出的是 `TypeException: PointStamped is not loaded or supported`；
+- 所以候选人一直没法被写入最终结果，最后表现为 `no waving customer found during one full scan`。
+
+最终修法：
+
+- 彻底去掉这一步 Python `tf2` 变点；
+- 新增 `base_link_point_to_map_point(...)`；
+- 直接用当前 `/map_to_baselink` 提供的机器人位姿，手算把 `base_link` 下的点换到 `map`。
 
 
 ## 6. 目前已知状态
