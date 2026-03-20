@@ -1,4 +1,4 @@
-# 2026 SEU RoboCup@Home Restaurant Code
+# *SEU RoboCup@Home Restaurant 2026*
 
 东南大学自动化学院 RoboCup@Home Restaurant 赛题代码
 
@@ -123,3 +123,5 @@ task: 'command'"
 - `seu_speech_recognition` 当前运行环境为 Python 3.10 + faster-whisper（环境已就绪）。
 - 当前仓库 `my_whisper.py` 代码仍为 `openai-whisper` 调用接口（录音-识别），并与 `seu_voice` 服务联动。
 - `seu_speech_recognition/launch/run.launch` 仍引用 `run.sh`，但仓库中无该文件；请按上面的 `rosrun` 命令启动。
+---
+*SEU RoboCup Team 2026*
