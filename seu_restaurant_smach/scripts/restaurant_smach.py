@@ -244,7 +244,7 @@ class AlignAndTakeOrderState(smach.State):
         smach.State.__init__(
             self,
             outcomes=["success", "failure"],
-            output_keys=["service_pose_map", "order_text"], # 输出：完美互动点（存位姿）、识别到的订单文本
+            output_keys=["service_pose_map", "order_text", "orderlist"], # 输出：完美互动点（存位姿）、识别到的订单文本、LLM 提取的物品列表
         )
 
     def execute(self, userdata):
@@ -273,6 +273,8 @@ class AlignAndTakeOrderState(smach.State):
         userdata.service_pose_map = result.service_pose_map
         # 保存识别出的订单全称
         userdata.order_text = result.order_text
+        # 保存 LLM 提取出的物品列表，供后续状态或调试直接读取。
+        userdata.orderlist = result.orderlist
         return "success"
 
 class SpeakOrderAtBarState(smach.State):

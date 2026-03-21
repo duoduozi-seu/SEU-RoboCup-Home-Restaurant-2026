@@ -11,10 +11,11 @@ find_package(catkin REQUIRED COMPONENTS
   tf
   tf2_ros
   seu_restaurant_msgs
+  seu_restaurant_order_llm
   seu_speech_recognition
   seu_voice
 )
 
 catkin_package(
-  CATKIN_DEPENDS actionlib geometry_msgs nav_msgs rospy sensor_msgs std_msgs tf tf2_ros seu_restaurant_msgs seu_speech_recognition seu_voice
+  CATKIN_DEPENDS actionlib geometry_msgs nav_msgs rospy sensor_msgs std_msgs tf tf2_ros seu_restaurant_msgs seu_restaurant_order_llm seu_speech_recognition seu_voice
 )

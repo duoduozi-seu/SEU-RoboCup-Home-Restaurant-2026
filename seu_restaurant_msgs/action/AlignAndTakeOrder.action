@@ -9,6 +9,7 @@ bool success
 string error_msg
 geometry_msgs/PoseStamped service_pose_map
 string order_text
+string[] orderlist
 uint8 rounds_used
 ---
 # Feedback

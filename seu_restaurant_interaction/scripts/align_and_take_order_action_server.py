@@ -11,6 +11,7 @@ import rospy
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from seu_restaurant_msgs.msg import AlignAndTakeOrderAction, AlignAndTakeOrderResult
+from seu_restaurant_order_llm.msg import ParseRestaurantOrderAction, ParseRestaurantOrderGoal
 from seu_speech_recognition.srv import seu_speech_recognition as SpeechSrv
 from seu_speech_recognition.srv import seu_speech_recognitionRequest
 from seu_voice.srv import seu_voice as VoiceSrv
@@ -26,6 +27,7 @@ from person_align_core import classify_confirmation_text, select_nearest_person_
 
 
 ACTION_NAME = "align_and_take_order"
+ORDER_PARSER_ACTION_NAME = "parse_restaurant_order"
 # 当前导航系统输出的是 map 坐标系下的 Odometry，而不是 `/robot_pose`。
 ROBOT_POSE_TOPIC = "/map_to_baselink"
 CMD_VEL_TOPIC = "/cmd_vel"
@@ -303,8 +305,13 @@ class AlignAndTakeOrderActionServer:
             detector.close()
 
     def execute_cb(self, goal):
-        """执行局部对正 + 接单 + yes/no 确认。"""
-        result = AlignAndTakeOrderResult(success=False, error_msg="", order_text="", rounds_used=0)
+        """执行局部对正 + 接单 + yes/no 确认 + LLM 订单解析。"""
+        result = AlignAndTakeOrderResult()
+        result.success = False
+        result.error_msg = ""
+        result.order_text = ""
+        result.orderlist = []
+        result.rounds_used = 0
 
         try:
             if self.current_pose is None:
@@ -316,6 +323,13 @@ class AlignAndTakeOrderActionServer:
                 if self.server.is_preempt_requested():
                     return
                 result.error_msg = "failed to align to the nearest customer within timeout"
+                self.server.set_aborted(result, result.error_msg)
+                return
+
+            # 订单 LLM 解析也走 actionlib，保持和其他餐厅节点一致的通信方式。
+            llm_client = actionlib.SimpleActionClient(ORDER_PARSER_ACTION_NAME, ParseRestaurantOrderAction)
+            if not llm_client.wait_for_server(rospy.Duration(5.0)):
+                result.error_msg = "llm parse failed or network error: order parser action unavailable"
                 self.server.set_aborted(result, result.error_msg)
                 return
 
@@ -332,11 +346,34 @@ class AlignAndTakeOrderActionServer:
                 if confirm_state != "yes":
                     continue
 
+                # 顾客确认原句后，再交给 LLM 做订单物品抽取。
+                llm_goal = ParseRestaurantOrderGoal()
+                llm_goal.order_text = order_text
+                llm_client.send_goal(llm_goal)
+                llm_client.wait_for_result()
+                llm_result = llm_client.get_result()
+
+                # no_info 代表这句原始语音本身没有可用订单信息，直接回到重新询问流程。
+                if llm_result is not None and not llm_result.success and llm_result.error_msg == "no_info":
+                    continue
+
+                # 除 no_info 外，其余失败都按 LLM/网络错误处理，当前 interaction 直接失败退出。
+                if llm_result is None:
+                    result.error_msg = "llm parse failed or network error: empty llm result"
+                    self.server.set_aborted(result, result.error_msg)
+                    return
+                if not llm_result.success:
+                    llm_error_msg = llm_result.error_msg or "unknown llm error"
+                    result.error_msg = "llm parse failed or network error: {}".format(llm_error_msg)
+                    self.server.set_aborted(result, result.error_msg)
+                    return
+
                 if self.current_pose is None:
                     odometry_message = rospy.wait_for_message(ROBOT_POSE_TOPIC, Odometry, timeout=2.0)
                     self.current_pose = odometry_to_pose_stamped(odometry_message)
                 result.success = True
                 result.order_text = order_text
+                result.orderlist = list(llm_result.items)
                 result.rounds_used = round_index + 1
                 result.service_pose_map = self.current_pose
                 self.server.set_succeeded(result)
