@@ -1,0 +1,9 @@
+# Goal
+string order_text
+---
+# Result
+bool success
+string error_msg
+string[] items
+---
+# Feedback

@@ -20,6 +20,9 @@
     <!-- 到达顾客附近后的局部对正与接单 -->
     <node pkg="seu_restaurant_interaction" type="align_and_take_order_action_server.py" name="align_and_take_order_action_server" output="screen"/>
 
+    <!-- 餐厅题订单物品解析 LLM action：只做英文订单句子的关键物品抽取 -->
+    <node pkg="seu_restaurant_order_llm" type="restaurant_order_llm_action_server.py" name="restaurant_order_llm_action_server" output="screen"/>
+
     <!-- 餐厅题主状态机 -->
     <node pkg="seu_restaurant_smach" type="restaurant_smach.py" name="restaurant_smach" output="screen"/>
 </launch>
