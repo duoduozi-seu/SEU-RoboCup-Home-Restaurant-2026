@@ -14,6 +14,7 @@ add_action_files(
   FindWavingCustomer.action
   AlignAndTakeOrder.action
   RestaurantNav.action
+  ParseRestaurantOrder.action
 )
 
 generate_messages(

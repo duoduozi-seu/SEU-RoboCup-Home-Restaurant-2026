@@ -5,7 +5,7 @@
 import actionlib
 import rospy
 
-from seu_restaurant_order_llm.msg import ParseRestaurantOrderAction, ParseRestaurantOrderGoal
+from seu_restaurant_msgs.msg import ParseRestaurantOrderAction, ParseRestaurantOrderGoal
 
 
 # 这里直接写一个固定英文句子，方便独立联调。
@@ -31,6 +31,8 @@ def main():
     # 等待服务端完成本次解析，再统一读取结果。
     client.wait_for_result()
     result = client.get_result()
+    if result is None:
+        raise RuntimeError("empty action result")
 
     print("success:", result.success)
     print("error_msg:", result.error_msg)

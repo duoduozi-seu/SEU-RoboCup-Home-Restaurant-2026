@@ -128,14 +128,10 @@ def load_module():
         'seu_restaurant_msgs.msg',
         AlignAndTakeOrderAction=object,
         AlignAndTakeOrderResult=DummyAlignAndTakeOrderResult,
-    )
-    fake_restaurant_msgs = _make_module('seu_restaurant_msgs', msg=fake_restaurant_msgs_msg)
-    fake_llm_msgs_msg = _make_module(
-        'seu_restaurant_order_llm.msg',
         ParseRestaurantOrderAction=object,
         ParseRestaurantOrderGoal=DummyParseRestaurantOrderGoal,
     )
-    fake_llm_msgs = _make_module('seu_restaurant_order_llm', msg=fake_llm_msgs_msg)
+    fake_restaurant_msgs = _make_module('seu_restaurant_msgs', msg=fake_restaurant_msgs_msg)
     fake_speech_srv = _make_module(
         'seu_speech_recognition.srv',
         seu_speech_recognition=object,
@@ -155,6 +151,7 @@ def load_module():
     )
 
     spec = importlib.util.spec_from_file_location('align_and_take_order_action_server_under_test', MODULE_PATH)
+    assert spec is not None
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     with patch.dict(
@@ -168,8 +165,6 @@ def load_module():
             'nav_msgs.msg': fake_nav_msgs_msg,
             'seu_restaurant_msgs': fake_restaurant_msgs,
             'seu_restaurant_msgs.msg': fake_restaurant_msgs_msg,
-            'seu_restaurant_order_llm': fake_llm_msgs,
-            'seu_restaurant_order_llm.msg': fake_llm_msgs_msg,
             'seu_speech_recognition': fake_speech,
             'seu_speech_recognition.srv': fake_speech_srv,
             'seu_voice': fake_voice,

@@ -10,8 +10,12 @@ import rospy
 
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
-from seu_restaurant_msgs.msg import AlignAndTakeOrderAction, AlignAndTakeOrderResult
-from seu_restaurant_order_llm.msg import ParseRestaurantOrderAction, ParseRestaurantOrderGoal
+from seu_restaurant_msgs.msg import (
+    AlignAndTakeOrderAction,
+    AlignAndTakeOrderResult,
+    ParseRestaurantOrderAction,
+    ParseRestaurantOrderGoal,
+)
 from seu_speech_recognition.srv import seu_speech_recognition as SpeechSrv
 from seu_speech_recognition.srv import seu_speech_recognitionRequest
 from seu_voice.srv import seu_voice as VoiceSrv
@@ -328,7 +332,7 @@ class AlignAndTakeOrderActionServer:
 
             # 订单 LLM 解析也走 actionlib，保持和其他餐厅节点一致的通信方式。
             llm_client = actionlib.SimpleActionClient(ORDER_PARSER_ACTION_NAME, ParseRestaurantOrderAction)
-            if not llm_client.wait_for_server(rospy.Duration(5.0)):
+            if not llm_client.wait_for_server(rospy.Duration(5)):
                 result.error_msg = "llm parse failed or network error: order parser action unavailable"
                 self.server.set_aborted(result, result.error_msg)
                 return

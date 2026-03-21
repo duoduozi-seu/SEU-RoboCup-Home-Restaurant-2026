@@ -213,7 +213,7 @@ class RestaurantOrderLlmActionServer:
 
     def __init__(self):
         """初始化 action server 和 Gemini API core。"""
-        from seu_restaurant_order_llm.msg import ParseRestaurantOrderAction
+        from seu_restaurant_msgs.msg import ParseRestaurantOrderAction
 
         # API core 只负责 HTTP 调用；业务判断都留在本文件里。
         self.api_core = GeminiApiCore()
@@ -228,7 +228,7 @@ class RestaurantOrderLlmActionServer:
 
     def build_result_message(self, success, error_msg, items):
         """统一构造 action result，避免字段赋值散落在多个分支里。"""
-        from seu_restaurant_order_llm.msg import ParseRestaurantOrderResult
+        from seu_restaurant_msgs.msg import ParseRestaurantOrderResult
 
         result = ParseRestaurantOrderResult()
         result.success = success

@@ -22,6 +22,8 @@
 
 这个包用于给 Restaurant 题提供一个独立的 LLM 订单解析 action 节点。
 
+`ParseRestaurantOrder` 的 action 接口定义已经统一放到 `seu_restaurant_msgs` 中，这个包只保留服务端实现与解析逻辑。
+
 输入：
 
 - 一整句英文订单文本，例如：`i want a bottle of cola, a bag of chips and a bottle of mineral water`
@@ -39,7 +41,7 @@
 
 ## 2. 包内关键文件
 
-- `action/ParseRestaurantOrder.action`
+- `../seu_restaurant_msgs/action/ParseRestaurantOrder.action`
   - action 接口定义。
 - `scripts/gemini_api_core.py`
   - Gemini HTTP 基础调用封装。
@@ -82,6 +84,7 @@ Gemini 网关和 key 集中在 `scripts/gemini_api_core.py`：
 cd /home/duo/GPSR_ws_zyd/catkin_robocup_2
 source /opt/ros/noetic/setup.bash
 catkin_make --pkg seu_restaurant_order_llm
+catkin_make --pkg seu_restaurant_msgs seu_restaurant_order_llm
 ```
 
 ## 5. 启动服务端

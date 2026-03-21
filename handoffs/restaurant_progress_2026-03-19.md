@@ -19,15 +19,16 @@
 
 ### 2.1 `seu_restaurant_msgs`
 
-新建接口包，只放餐厅题 action：
+新建接口包，统一放餐厅题 action：
 
 - `action/FindWavingCustomer.action`
 - `action/AlignAndTakeOrder.action`
 - `action/RestaurantNav.action`
+- `action/ParseRestaurantOrder.action`
 
 作用：
 
-- 给挥手搜索、桌边接单、导航包装三类能力提供统一接口。
+- 给挥手搜索、桌边接单、导航包装、订单解析四类能力提供统一接口。
 
 
 ### 2.2 `seu_restaurant_wave`

@@ -2,26 +2,13 @@ cmake_minimum_required(VERSION 3.0.2)
 project(seu_restaurant_order_llm)
 
 find_package(catkin REQUIRED COMPONENTS
-  actionlib_msgs
-  message_generation
+  actionlib
   rospy
-  std_msgs
-)
-
-add_action_files(
-  DIRECTORY action
-  FILES
-  ParseRestaurantOrder.action
-)
-
-generate_messages(
-  DEPENDENCIES
-  actionlib_msgs
-  std_msgs
+  seu_restaurant_msgs
 )
 
 catkin_package(
-  CATKIN_DEPENDS actionlib_msgs message_runtime rospy std_msgs
+  CATKIN_DEPENDS actionlib rospy seu_restaurant_msgs
 )
 
 include_directories(
