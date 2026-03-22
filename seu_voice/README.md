@@ -1,93 +1,56 @@
-# seu_voice
+# *SEU RoboCup@Home Restaurant 2026*
 
-ROS1 (Noetic) TTS service package based on Piper.
+东南大学自动化学院 RoboCup@Home Restaurant 赛题代码
 
-## Features
+- 代码作者：东南大学自动化学院机器人工程系 周艺舵
+- 开发基础环境：Ubuntu 20.04 + ROS Noetic
 
-- Blocking ROS service call.
-- Each request synthesizes speech immediately and plays it immediately.
-- Service returns only after playback is finished.
-- Busy requests are rejected with explicit error code.
+## `seu_voice`
 
-## Service API
+`seu_voice` 是 Restaurant 任务的离线语音播报服务包，基于 Piper TTS 提供阻塞式 ROS Service，适合问单提示、吧台复述和任务结束播报。
 
-Service name (default): `/voice_service`
+## 用法命令
 
-Service type: `seu_voice/seu_voice`
-
-```srv
-string text
----
-bool state
-int64 errorcode
-float32 synth_time_sec
-float32 play_time_sec
-float32 total_time_sec
-string errormsg
-```
-
-Error codes:
-
-- `0`: success
-- `1001`: empty text
-- `1002`: busy
-- `1003`: synthesis failed
-- `1004`: playback failed
-- `1005`: model/config load failed
-
-## Runtime Params
-
-- `~service_name` (default: `voice_service`)
-- `~model_path`
-- `~config_path`
-- `~player_cmd` (default: `aplay -q`)
-- `~tmp_dir` (default: `/tmp/seu_voice`)
-
-## Environment Setup (manual)
+首次使用前，建议先安装 `piper-tts` 和 `alsa-utils`。
 
 ```bash
-cd /home/duo/GPSR_ws_zyd/GPSR_code
-# conda activate GPSR
-
-python3 -m pip install -U pip
-python3 -m pip install piper-tts
-
-sudo apt-get update
-sudo apt-get install -y alsa-utils
-```
-
-## Download Default Model
-
-```bash
-mkdir -p /home/duo/GPSR_ws_zyd/GPSR_code/src/seu_voice/models
-cd /home/duo/GPSR_ws_zyd/GPSR_code/src/seu_voice/models
-python3 -m piper.download_voices en_US-lessac-medium --data-dir .
-
-find . -name 'en_US-lessac-medium.onnx*'
-```
-
-## Build and Run
-
-```bash
-cd /home/duo/GPSR_ws_zyd/GPSR_code
+cd /home/duo/GPSR_ws_zyd/catkin_robocup_2
+source /opt/ros/noetic/setup.bash
 catkin_make --pkg seu_voice
 source devel/setup.bash
+
 roslaunch seu_voice voice_service.launch
 ```
 
-Note:
-
-- `voice_service.launch` uses `type="scripts/voice_service.py"` so it follows your current shell `python3` (for conda environments).
-- If you run `rosrun seu_voice voice_service.py`, catkin may use `/usr/bin/python3` wrapper in `devel/lib/seu_voice/`, and that interpreter also needs `piper-tts`.
-
-## Test
+另开终端测试服务：
 
 ```bash
+cd /home/duo/GPSR_ws_zyd/catkin_robocup_2
+source /opt/ros/noetic/setup.bash
+source devel/setup.bash
 rosservice call /voice_service "text: 'Hello, I am ready.'"
 ```
 
-or:
+也可以用示例客户端测试：
 
 ```bash
 rosrun seu_voice voice_client_demo.py "Hello, I am ready."
 ```
+
+## 可能修改的变量
+
+| 位置 | 变量 | 说明 |
+| --- | --- | --- |
+| `launch/voice_service.launch` | `service_name` `model_path` `config_path` `player_cmd` `tmp_dir` | 启动参数入口 |
+| `scripts/voice_service.py` | `ERR_EMPTY_TEXT` `ERR_BUSY` `ERR_SYNTH_FAILED` `ERR_PLAY_FAILED` `ERR_MODEL_LOAD_FAILED` | 服务返回码 |
+| `models/` | `en_US-lessac-medium.onnx` `en_US-lessac-medium.onnx.json` | 默认语音模型与配置 |
+
+## 技术栈 / Pipeline
+
+1. 上游模块调用 `/voice_service` 发送文本。
+2. Piper 将文本合成为临时 WAV 文件。
+3. 本地播放器命令默认使用 `aplay -q` 立即播报。
+4. 服务在播放结束后返回状态、耗时和错误码。
+
+---
+*SEU RoboCup Team 2026*

@@ -2,126 +2,77 @@
 
 东南大学自动化学院 RoboCup@Home Restaurant 赛题代码
 
-<!-- <div align="center">
-  <span style="font-family: 'Times New Roman', 'SimSun', serif; font-size: 20px;">周艺舵</span><br/>
-  <span style="font-family: 'Times New Roman', 'SimSun', serif; font-size: 16px;">东南大学自动化学院 (School of Automation, Southeast University)</span>
-</div>
-
-**Environment**
-
-- Ubuntu 20.04
-- ROS Noetic
-- Python 3.10 -->
-
 - 代码作者：东南大学自动化学院机器人工程系 周艺舵
 - 开发基础环境：Ubuntu 20.04 + ROS Noetic
 
-## 工作空间构建
+## 项目概览
+
+本仓库面向 RoboCup@Home Restaurant 赛题，核心流程覆盖挥手找客、导航接近、桌边点单、语音播报、订单解析和返回交付。
+
+## 快速启动
+
+先在工作区根目录完成编译：
 
 ```bash
-cd ~/GPSR_ws_zyd/GPSR_code
+cd /home/duo/GPSR_ws_zyd/catkin_robocup_2
+source /opt/ros/noetic/setup.bash
 catkin_make
 source devel/setup.bash
 ```
 
-## 模块 1：`seu_voice`（离线语音合成，Piper）
+比赛运行时，建议按下面顺序启动：
 
-### 环境配置
-
-```bash
-# 建议在项目使用的 Python/Conda 环境中执行
-python3 -m pip install -U pip
-python3 -m pip install piper-tts
-
-sudo apt-get update
-sudo apt-get install -y alsa-utils
-```
-
-模型文件需存在于：
-
-- `src/seu_voice/models/en_US-lessac-medium.onnx`
-- `src/seu_voice/models/en_US-lessac-medium.onnx.json`
-
-### 启动与测试
+终端 1：启动底盘与导航底层（上游 `tracer_nav`）
 
 ```bash
-source ~/GPSR_ws_zyd/GPSR_code/devel/setup.bash
-roslaunch seu_voice voice_service.launch
+roslaunch tracer_nav nav_all.launch
 ```
 
-另开终端测试：
+终端 2：启动 `task_nav` 服务端
 
 ```bash
-source ~/GPSR_ws_zyd/GPSR_code/devel/setup.bash
-rosservice call /voice_service "text: 'hello, i am ready'"
+rosrun tracer_nav task_nav_server.py
 ```
 
-## 模块 2：`seu_speech_recognition`（Whisper 语音识别）
-
-### 环境配置
-
-已用 `conda list` + 环境内 `pip list` 核实当前可用环境为 `gpsr_whisper310`（Python 3.10.19）。
+终端 3：启动 Restaurant 全流程
 
 ```bash
-# 核对命令
-conda activate gpsr_whisper310
-conda list | egrep "python|faster-whisper|ctranslate2|openai-whisper|torch|pyaudio|scipy|numpy"
-pip list   | egrep "faster-whisper|ctranslate2|openai-whisper|torch|PyAudio|scipy|numpy"
+roslaunch seu_restaurant_smach init.launch
 ```
 
-当前环境关键版本（实测）：
+## 模块说明
 
-- `python`: `3.10.19`
-- `faster-whisper`: `1.2.1`
-- `ctranslate2`: `4.7.1`
-- `openai-whisper`: `20250625`
-- `torch/torchaudio/torchvision`: `2.4.0+cu121 / 2.4.0+cu121 / 0.19.0+cu121`
-- `PyAudio`: `0.2.14`
-- `scipy`: `1.15.3`
-- `numpy`: `2.2.6`
+| 模块 | 作用 |
+| --- | --- |
+| `seu_restaurant_msgs` | Restaurant 任务公共 Action 接口定义 |
+| `seu_restaurant_wave` | 挥手顾客搜索与目标坐标输出 |
+| `seu_restaurant_interaction` | 桌边对齐、问单、ASR 与 LLM 联动 |
+| `seu_restaurant_order_llm` | 英文订单句子的物品抽取 |
+| `seu_voice` | 基于 Piper 的离线 TTS 服务 |
+| `seu_speech_recognition` | 基于 Whisper 的语音识别服务 |
+| `seu_nav` | 对接底层导航系统的餐厅导航 Action 包装层 |
+| `seu_restaurant_smach` | 主状态机与全流程调度入口 |
 
-如需按当前环境重装关键依赖：
+## 常改位置
 
-```bash
-conda activate gpsr_whisper310
-python3 -m pip install -U pip
-python3 -m pip install \
-  faster-whisper==1.2.1 ctranslate2==4.7.1 \
-  openai-whisper==20250625 \
-  PyAudio==0.2.14 scipy==1.15.3 numpy==2.2.6
-```
+| 位置 | 说明 |
+| --- | --- |
+| `seu_restaurant_smach/launch/init.launch` | 全模块 bringup 入口 |
+| `seu_restaurant_smach/scripts/restaurant_smach.py` | 主流程顺序、超时和播报文案 |
+| `seu_restaurant_wave/scripts/wave_detector_core.py` | 挥手检测模型路径与阈值 |
+| `seu_restaurant_order_llm/scripts/restaurant_order_llm_action_server.py` | LLM 模型与 prompt |
+| `seu_speech_recognition/scripts/config.py` | 语音模型和音频路径 |
+| `seu_voice/launch/voice_service.launch` | TTS 模型、播放命令和服务参数 |
 
-模型默认路径（见 `scripts/config.py`）：
+## 技术栈 / Pipeline
 
-- `src/seu_speech_recognition/scripts/large-v3-turbo.pt`
+- 基础框架：ROS Noetic、SMACH、ActionLib、ROS Service
+- 视觉感知：RealSense + YOLO Pose
+- 语音模块：Piper TTS + Whisper ASR
+- 语言理解：Gemini 订单物品抽取
+- 任务链路：挥手找客 -> 导航接近 -> 桌边对齐 -> 语音接单 -> LLM 解析 -> 回吧台播报 -> 返回顾客交付
 
-该模块会调用 `voice_service` 进行提示音播报，建议先启动 `seu_voice`。
+各子模块的具体用法、变量位置和调试命令，见对应包内 `README.md`。
 
-### 启动与测试
-
-```bash
-source ~/GPSR_ws_zyd/GPSR_code/devel/setup.bash
-rosrun seu_speech_recognition speech_service.py
-```
-
-另开终端测试：
-
-```bash
-source ~/GPSR_ws_zyd/GPSR_code/devel/setup.bash
-rosservice call /speech_recognition_service "enable: false
-task: 'command'"
-```
-
-参数说明：
-
-- `enable`：当前代码中为保留字段，`true/false` 目前均不改变识别流程。
-- `task`：用于提示语选择，`command` 会播报 `please say the command`，`answer` 会播报 `please ask the question`。
-
-## 当前代码说明（与旧版对比）
-
-- `seu_voice` 已切换为 Piper TTS 服务，阻塞式返回，含 busy/errorcode 机制。
-- `seu_speech_recognition` 当前运行环境为 Python 3.10 + faster-whisper（环境已就绪）。
-- 当前仓库 `my_whisper.py` 代码仍为 `openai-whisper` 调用接口（录音-识别），并与 `seu_voice` 服务联动。
-- `seu_speech_recognition/launch/run.launch` 仍引用 `run.sh`，但仓库中无该文件；请按上面的 `rosrun` 命令启动。
 ---
 *SEU RoboCup Team 2026*
