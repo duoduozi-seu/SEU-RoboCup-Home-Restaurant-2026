@@ -6,6 +6,7 @@ find_package(catkin REQUIRED COMPONENTS
   actionlib_msgs
   geometry_msgs
   message_generation
+  nav_msgs
   rospy
   seu_restaurant_msgs
   std_msgs
@@ -22,7 +23,7 @@ generate_messages(
 )
 
 catkin_package(
-  CATKIN_DEPENDS actionlib actionlib_msgs geometry_msgs message_runtime rospy seu_restaurant_msgs std_msgs
+  CATKIN_DEPENDS actionlib actionlib_msgs geometry_msgs message_runtime nav_msgs rospy seu_restaurant_msgs std_msgs
 )
 
 include_directories(
