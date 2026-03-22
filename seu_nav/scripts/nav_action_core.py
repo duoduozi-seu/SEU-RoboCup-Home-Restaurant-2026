@@ -105,6 +105,14 @@ def is_free_costmap_cell(costmap_message, grid_x: int, grid_y: int) -> bool:
     return cell_value == FREE_SPACE_COST
 
 
+def is_direct_goal_costmap_cell_acceptable(costmap_message, grid_x: int, grid_y: int) -> bool:
+    """原始目标点允许落在自由栅格或 unknown 栅格。"""
+    cell_value = costmap_cell_value(costmap_message, grid_x, grid_y)
+    if cell_value is None:
+        return False
+    return cell_value in (FREE_SPACE_COST, UNKNOWN_SPACE_COST)
+
+
 def pose_position_distance_xy(left_pose, right_pose) -> float:
     """计算两个 pose 的二维平面距离。"""
     dx = float(left_pose.pose.position.x) - float(right_pose.pose.position.x)
@@ -192,8 +200,8 @@ def resolve_accessible_pose(start_pose, requested_goal_pose, costmap_message, ma
     target_y = float(requested_goal_pose.pose.position.y)
     target_grid_x, target_grid_y = world_to_grid(info, target_x, target_y)
 
-    requested_goal_is_free = is_free_costmap_cell(costmap_message, target_grid_x, target_grid_y)
-    if requested_goal_is_free:
+    requested_goal_is_acceptable = is_direct_goal_costmap_cell_acceptable(costmap_message, target_grid_x, target_grid_y)
+    if requested_goal_is_acceptable:
         requested_plan_length = plan_length_fn(requested_goal_pose)
         if requested_plan_length is not None:
             return {

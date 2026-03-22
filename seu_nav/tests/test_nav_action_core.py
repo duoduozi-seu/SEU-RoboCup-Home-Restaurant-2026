@@ -124,6 +124,28 @@ class NavActionCoreTest(unittest.TestCase):
         self.assertAlmostEqual(result["resolved_pose"].pose.position.y, 2.7)
         self.assertAlmostEqual(_yaw_from_quaternion(result["resolved_pose"].pose.orientation), 0.3, places=6)
 
+    def test_resolve_accessible_pose_keeps_unknown_original_when_plan_exists(self):
+        """原始目标点位于 unknown 区域时，只要能规划出路径也应直接使用。"""
+        start_pose = _make_pose(0.5, 0.5)
+        goal_pose = _make_pose(2.5, 2.5, yaw=0.2)
+        costmap = _make_costmap(6, 6, resolution=1.0, default_value=100)
+        _set_cost(costmap, 2, 2, -1)
+
+        def plan_length_fn(candidate_pose):
+            if math.isclose(candidate_pose.pose.position.x, 2.5, abs_tol=1e-6) and math.isclose(
+                candidate_pose.pose.position.y, 2.5, abs_tol=1e-6
+            ):
+                return 2.8
+            return None
+
+        result = resolve_accessible_pose(start_pose, goal_pose, costmap, 2.0, plan_length_fn)
+
+        self.assertFalse(result["adjusted"])
+        self.assertEqual(result["ring_index"], 0)
+        self.assertAlmostEqual(result["resolved_pose"].pose.position.x, 2.5)
+        self.assertAlmostEqual(result["resolved_pose"].pose.position.y, 2.5)
+        self.assertAlmostEqual(_yaw_from_quaternion(result["resolved_pose"].pose.orientation), 0.2, places=6)
+
     def test_resolve_accessible_pose_selects_shortest_plan_on_first_reachable_ring(self):
         """一旦某层存在可达点，应只在该层内按最短全局路径择优。"""
         start_pose = _make_pose(0.5, 0.5)
