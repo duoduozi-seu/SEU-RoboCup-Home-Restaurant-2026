@@ -1,6 +1,6 @@
 # *SEU RoboCup@Home Restaurant 2026*
 
-东南大学自动化学院 RoboCup@Home Restaurant 赛题代码
+东南大学 RoboCup@Home Restaurant 赛题代码
 
 - 代码作者：东南大学自动化学院机器人工程系 周艺舵
 - 开发基础环境：Ubuntu 20.04 + ROS Noetic
