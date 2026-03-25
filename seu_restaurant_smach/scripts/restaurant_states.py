@@ -61,14 +61,12 @@ def build_customer_nav_pose(robot_pose: PoseStamped, person_point, stand_off_dis
     if distance <= 1e-6:
         raise ValueError("robot pose and person point are too close to build a navigation pose")
 
-    unit_x = dx / distance
-    unit_y = dy / distance
     target_yaw = math.atan2(dy, dx)
 
     nav_pose = PoseStamped()
     nav_pose.header.frame_id = robot_pose.header.frame_id or "map"
-    nav_pose.pose.position.x = person_point.x - unit_x * stand_off_distance
-    nav_pose.pose.position.y = person_point.y - unit_y * stand_off_distance
+    nav_pose.pose.position.x = person_point.x
+    nav_pose.pose.position.y = person_point.y
     nav_pose.pose.position.z = 0.0
 
     quaternion = quaternion_from_euler(0.0, 0.0, target_yaw)

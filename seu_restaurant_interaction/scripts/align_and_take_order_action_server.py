@@ -295,7 +295,10 @@ class AlignAndTakeOrderActionServer:
 
                 candidate = detector.process_once()
                 if candidate is None:
-                    self._stop_robot()
+                    # 看不到人时保持原地搜索，直到重新进入有效检测范围。
+                    twist = Twist()
+                    twist.angular.z = ANGULAR_SPEED
+                    self.cmd_vel_pub.publish(twist)
                     rate.sleep()
                     continue
 

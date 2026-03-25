@@ -234,7 +234,7 @@ class NavigatePoseState(smach.State):
             # 如果底层导航成功到达（success=True），则该状态成功
             if result is not None and result.success:
                 return "success"
-        
+
         rospy.logerr("Navigation to pose '%s' failed.", self.pose_key)
         return "failure"
 
@@ -291,6 +291,13 @@ class AlignAndTakeOrderState(smach.State):
         
         # 结果校验：如果对话完全失败（如没人回应），则返回 failure
         if result is None or not result.success:
+            detail = ""
+            if result is not None and getattr(result, "error_msg", ""):
+                detail = result.error_msg
+            else:
+                detail = (client.get_goal_status_text() or "").strip()
+            if detail:
+                rospy.logerr("Align and take order failed: %s", detail)
             return "failure"
 
         # 保存对齐后的具体位姿：回头送货时再用这个点会比之前的计算点更精准。
