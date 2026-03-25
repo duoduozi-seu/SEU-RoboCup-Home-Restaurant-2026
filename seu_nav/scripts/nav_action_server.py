@@ -12,10 +12,11 @@ import sys
 
 import actionlib
 import rospy
+import tf2_ros
 import yaml
 
 from geometry_msgs.msg import PoseStamped
-from nav_msgs.msg import OccupancyGrid, Odometry
+from nav_msgs.msg import OccupancyGrid
 from nav_msgs.srv import GetPlan, GetPlanRequest
 from tracer_nav.msg import TaskNavAction, TaskNavGoal
 from seu_restaurant_msgs.msg import RestaurantNavAction, RestaurantNavResult
@@ -39,12 +40,13 @@ ACTION_NAME = "restaurant_nav"
 DOWNSTREAM_ACTION_NAME = "task_nav"
 DEFAULT_TIMEOUT_SEC = 120.0
 ACTION_CONNECT_TIMEOUT_SEC = 10.0
-ROBOT_POSE_TOPIC = "/map_to_baselink"
+MAP_FRAME = "map"
+ROBOT_BASE_FRAME = "base_link"
 GLOBAL_COSTMAP_TOPIC = "/move_base/global_costmap/costmap"
 MAKE_PLAN_SERVICE_NAME = "/move_base/make_plan"
-DEFAULT_GOAL_SEARCH_RADIUS_M = 1.5
-WAIT_FOR_POSE_TIMEOUT_SEC = 2.0
-WAIT_FOR_COSTMAP_TIMEOUT_SEC = 2.0
+DEFAULT_GOAL_SEARCH_RADIUS_M = 3.5
+WAIT_FOR_POSE_TIMEOUT_SEC = 4.0
+WAIT_FOR_COSTMAP_TIMEOUT_SEC = 4.0
 MAKE_PLAN_TIMEOUT_SEC = 2.0
 MAKE_PLAN_TOLERANCE_M = 0.0
 WAYPOINTS_YAML_PATH = os.path.join(
@@ -68,11 +70,15 @@ def build_pose_from_waypoint_dict(pose_dict):
     return pose
 
 
-def odometry_to_pose_stamped(odometry_message):
-    """把导航系统的 Odometry 提取成 PoseStamped。"""
+def transform_to_pose_stamped(transform_message):
+    """把 TF 变换提取成 PoseStamped。"""
     pose = PoseStamped()
-    pose.header = odometry_message.header
-    pose.pose = odometry_message.pose.pose
+    pose.header.stamp = transform_message.header.stamp
+    pose.header.frame_id = transform_message.header.frame_id
+    pose.pose.position.x = transform_message.transform.translation.x
+    pose.pose.position.y = transform_message.transform.translation.y
+    pose.pose.position.z = transform_message.transform.translation.z
+    pose.pose.orientation = transform_message.transform.rotation
     return pose
 
 
@@ -87,8 +93,9 @@ class RestaurantNavActionServer:
         self.current_pose = None
         self.global_costmap = None
         self.make_plan_client = None
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
-        rospy.Subscriber(ROBOT_POSE_TOPIC, Odometry, self._pose_callback, queue_size=1)
         rospy.Subscriber(GLOBAL_COSTMAP_TOPIC, OccupancyGrid, self._costmap_callback, queue_size=1)
 
         self.nav_client = actionlib.SimpleActionClient(DOWNSTREAM_ACTION_NAME, TaskNavAction)
@@ -108,10 +115,6 @@ class RestaurantNavActionServer:
         self.server.start()
         rospy.loginfo("[seu_nav] restaurant nav action is ready: %s", ACTION_NAME)
 
-    def _pose_callback(self, message):
-        """缓存当前机器人位姿。"""
-        self.current_pose = odometry_to_pose_stamped(message)
-
     def _costmap_callback(self, message):
         """缓存最新的全局代价地图。"""
         self.global_costmap = message
@@ -130,14 +133,14 @@ class RestaurantNavActionServer:
         return data
 
     def _get_current_pose(self):
-        """获取当前机器人位姿，必要时阻塞等待一次。"""
-        if self.current_pose is None:
-            odometry_message = rospy.wait_for_message(
-                ROBOT_POSE_TOPIC,
-                Odometry,
-                timeout=WAIT_FOR_POSE_TIMEOUT_SEC,
-            )
-            self.current_pose = odometry_to_pose_stamped(odometry_message)
+        """获取当前机器人位姿。"""
+        transform_message = self.tf_buffer.lookup_transform(
+            MAP_FRAME,
+            ROBOT_BASE_FRAME,
+            rospy.Time(0),
+            rospy.Duration(WAIT_FOR_POSE_TIMEOUT_SEC),
+        )
+        self.current_pose = transform_to_pose_stamped(transform_message)
         return copy.deepcopy(self.current_pose)
 
     def _get_global_costmap(self):

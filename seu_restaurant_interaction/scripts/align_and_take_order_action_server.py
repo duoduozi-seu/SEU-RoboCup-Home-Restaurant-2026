@@ -7,9 +7,9 @@ import sys
 
 import actionlib
 import rospy
+import tf2_ros
 
 from geometry_msgs.msg import PoseStamped, Twist
-from nav_msgs.msg import Odometry
 from seu_restaurant_msgs.msg import (
     AlignAndTakeOrderAction,
     AlignAndTakeOrderResult,
@@ -32,8 +32,8 @@ from person_align_core import classify_confirmation_text, select_nearest_person_
 
 ACTION_NAME = "align_and_take_order"
 ORDER_PARSER_ACTION_NAME = "parse_restaurant_order"
-# 当前导航系统输出的是 map 坐标系下的 Odometry，而不是 `/robot_pose`。
-ROBOT_POSE_TOPIC = "/map_to_baselink"
+MAP_FRAME = "map"
+ROBOT_BASE_FRAME = "base_link"
 CMD_VEL_TOPIC = "/cmd_vel"
 VOICE_SERVICE_NAME = "voice_service"
 SPEECH_SERVICE_NAME = "speech_recognition_service"
@@ -95,11 +95,15 @@ def sample_depth_median(depth_frame, center_x, center_y, radius=DEPTH_SAMPLE_RAD
     return float(values[len(values) // 2])
 
 
-def odometry_to_pose_stamped(odometry_message):
-    """把导航系统的 Odometry 提取成 PoseStamped。"""
+def transform_to_pose_stamped(transform_message):
+    """把 TF 变换提取成 PoseStamped。"""
     pose = PoseStamped()
-    pose.header = odometry_message.header
-    pose.pose = odometry_message.pose.pose
+    pose.header.stamp = transform_message.header.stamp
+    pose.header.frame_id = transform_message.header.frame_id
+    pose.pose.position.x = transform_message.transform.translation.x
+    pose.pose.position.y = transform_message.transform.translation.y
+    pose.pose.position.z = transform_message.transform.translation.z
+    pose.pose.orientation = transform_message.transform.rotation
     return pose
 
 
@@ -217,8 +221,9 @@ class AlignAndTakeOrderActionServer:
         self.current_pose = None
         self.voice_client = None
         self.speech_client = None
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
-        rospy.Subscriber(ROBOT_POSE_TOPIC, Odometry, self._pose_callback, queue_size=1)
         self.cmd_vel_pub = rospy.Publisher(CMD_VEL_TOPIC, Twist, queue_size=10)
 
         self.server = actionlib.SimpleActionServer(
@@ -230,9 +235,16 @@ class AlignAndTakeOrderActionServer:
         self.server.start()
         rospy.loginfo("[restaurant_interaction] action ready: %s", ACTION_NAME)
 
-    def _pose_callback(self, message):
-        """缓存机器人当前位姿。"""
-        self.current_pose = odometry_to_pose_stamped(message)
+    def _get_current_pose(self):
+        """直接从 TF 读取 map -> base_link 当前位姿。"""
+        transform_message = self.tf_buffer.lookup_transform(
+            MAP_FRAME,
+            ROBOT_BASE_FRAME,
+            rospy.Time(0),
+            rospy.Duration(2.0),
+        )
+        self.current_pose = transform_to_pose_stamped(transform_message)
+        return self.current_pose
 
     def _stop_robot(self):
         """停车。"""
@@ -318,9 +330,7 @@ class AlignAndTakeOrderActionServer:
         result.rounds_used = 0
 
         try:
-            if self.current_pose is None:
-                odometry_message = rospy.wait_for_message(ROBOT_POSE_TOPIC, Odometry, timeout=2.0)
-                self.current_pose = odometry_to_pose_stamped(odometry_message)
+            self.current_pose = self._get_current_pose()
 
             aligned = self._align_to_customer(goal.align_timeout_sec)
             if not aligned:
@@ -372,9 +382,7 @@ class AlignAndTakeOrderActionServer:
                     self.server.set_aborted(result, result.error_msg)
                     return
 
-                if self.current_pose is None:
-                    odometry_message = rospy.wait_for_message(ROBOT_POSE_TOPIC, Odometry, timeout=2.0)
-                    self.current_pose = odometry_to_pose_stamped(odometry_message)
+                self.current_pose = self._get_current_pose()
                 result.success = True
                 result.order_text = order_text
                 result.orderlist = list(llm_result.items)

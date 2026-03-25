@@ -11,7 +11,6 @@ import rospy
 import tf2_ros
 
 from geometry_msgs.msg import Point, PoseStamped, Twist
-from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Image
 from seu_restaurant_msgs.msg import FindWavingCustomerAction, FindWavingCustomerResult
 from tf.transformations import euler_from_quaternion
@@ -27,8 +26,8 @@ from wave_detector_core import WaveDetectorRuntime
 
 
 ACTION_NAME = "find_waving_customer"
-# 当前导航系统输出的是 map 坐标系下的 Odometry，而不是 `/robot_pose`。
-ROBOT_POSE_TOPIC = "/map_to_baselink"
+MAP_FRAME = "map"
+ROBOT_BASE_FRAME = "base_link"
 CMD_VEL_TOPIC = "/cmd_vel"
 DEBUG_IMAGE_TOPIC = "/restaurant_wave/debug_image"
 MARKER_TOPIC = "/restaurant_wave/target_marker"
@@ -116,9 +115,7 @@ class FindWavingCustomerActionServer:
     def __init__(self):
         self.camera_frame = rospy.get_param("~camera_frame", DEFAULT_CAMERA_FRAME)
         self.rate_hz = rospy.get_param("~rate_hz", DEFAULT_RATE_HZ)
-        self.current_pose = None
 
-        rospy.Subscriber(ROBOT_POSE_TOPIC, Odometry, self._pose_callback, queue_size=1)
         self.cmd_vel_pub = rospy.Publisher(CMD_VEL_TOPIC, Twist, queue_size=10)
         self.debug_image_pub = rospy.Publisher(DEBUG_IMAGE_TOPIC, Image, queue_size=1)
         self.marker_pub = rospy.Publisher(MARKER_TOPIC, Marker, queue_size=1)
@@ -134,27 +131,36 @@ class FindWavingCustomerActionServer:
         self.server.start()
         rospy.loginfo("[restaurant_wave] action ready: %s", ACTION_NAME)
 
-    def _pose_callback(self, message):
-        """缓存当前机器人位姿。"""
-        self.current_pose = self._odometry_to_pose_stamped(message)
-
     def _stop_robot(self):
         """无条件停车。"""
         self.cmd_vel_pub.publish(Twist())
 
+    def _get_current_pose(self):
+        """直接从 TF 读取 map -> base_link 当前位姿。"""
+        transform_message = self.tf_buffer.lookup_transform(
+            MAP_FRAME,
+            ROBOT_BASE_FRAME,
+            rospy.Time(0),
+            rospy.Duration(2.0),
+        )
+        return self._transform_to_pose_stamped(transform_message)
+
     def _camera_point_to_map(self, camera_point):
         """把检测点直接按 base_link 共点假设转到 map。"""
-        if self.current_pose is None:
-            raise RuntimeError("robot pose is unavailable")
+        robot_pose = self._get_current_pose()
         base_link_point = camera_point_to_base_link_point(camera_point)
-        return base_link_point_to_map_point(self.current_pose, base_link_point)
+        return base_link_point_to_map_point(robot_pose, base_link_point)
 
     @staticmethod
-    def _odometry_to_pose_stamped(odometry_message):
-        """把导航系统的 Odometry 提取成 PoseStamped。"""
+    def _transform_to_pose_stamped(transform_message):
+        """把 TF 变换提取成 PoseStamped。"""
         pose = PoseStamped()
-        pose.header = odometry_message.header
-        pose.pose = odometry_message.pose.pose
+        pose.header.stamp = transform_message.header.stamp
+        pose.header.frame_id = transform_message.header.frame_id
+        pose.pose.position.x = transform_message.transform.translation.x
+        pose.pose.position.y = transform_message.transform.translation.y
+        pose.pose.position.z = transform_message.transform.translation.z
+        pose.pose.orientation = transform_message.transform.rotation
         return pose
 
     def _publish_debug_image(self, debug_image):
@@ -190,10 +196,6 @@ class FindWavingCustomerActionServer:
         best_candidate = None
 
         try:
-            if self.current_pose is None:
-                odometry_message = rospy.wait_for_message(ROBOT_POSE_TOPIC, Odometry, timeout=2.0)
-                self.current_pose = self._odometry_to_pose_stamped(odometry_message)
-
             detector = WaveDetectorRuntime()
             rate = rospy.Rate(self.rate_hz)
             start_time = rospy.Time.now()

@@ -21,9 +21,9 @@ import actionlib
 import rospy
 import smach
 import smach_ros
+import tf2_ros
 
 from geometry_msgs.msg import PoseStamped
-from nav_msgs.msg import Odometry
 from seu_restaurant_msgs.msg import (
     AlignAndTakeOrderAction,
     AlignAndTakeOrderGoal,
@@ -42,7 +42,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from restaurant_states import build_customer_nav_pose, odometry_to_pose_stamped, reverse_pose_orientation
+from restaurant_states import build_customer_nav_pose, reverse_pose_orientation
 
 # --- 配置常量 ---
 WAVE_ACTION_NAME = "find_waving_customer"    # 找寻挥手顾客的 Action 服务名
@@ -50,9 +50,8 @@ NAV_ACTION_NAME = "restaurant_nav"           # 餐厅专用导航 Action 服务�
 INTERACTION_ACTION_NAME = "align_and_take_order" # 对准并接单 Action 服务名
 VOICE_SERVICE_NAME = "voice_service"         # 用于 TTS 播报的消息服务
 
-# 当前导航系统没有直接发布单独的 /robot_pose 话题，
-# 机器人在 map 坐标系下的实际位姿是通过 /map_to_baselink（里程计类型）发布的。
-ROBOT_POSE_TOPIC = "/map_to_baselink"
+MAP_FRAME = "map"
+ROBOT_BASE_FRAME = "base_link"
 
 WAVE_TIMEOUT_SEC = 45.0                      # 搜寻挥手的最大尝试时间
 WAVE_ANGULAR_SPEED_RAD_S = 0.15              # 旋转搜索时的角速度
@@ -64,6 +63,9 @@ ORDER_MAX_ROUNDS = 2                         # 询问订单时，若听不清最
 ASK_ORDER_TEXT = "Hello. What would you like to order?" # 初始问候语内容
 ORDER_REPEAT_PREFIX = "The customer ordered: " # 在吧台复述订单时的前导词
 FINAL_DELIVER_TEXT = "I am back. Please take your order. Enjoy your meal." # 任务结束播报
+
+_TF_BUFFER = None
+_TF_LISTENER = None
 
 # --- 辅助工具函数 ---
 
@@ -102,6 +104,31 @@ def say_once(text: str):
     if not response.state:
         raise RuntimeError("voice service failed: {}".format(response.errormsg))
 
+def get_tf_buffer():
+    """懒加载 TF 监听器，避免在 rospy.init_node 前初始化。"""
+    global _TF_BUFFER, _TF_LISTENER
+    if _TF_BUFFER is None:
+        _TF_BUFFER = tf2_ros.Buffer()
+        _TF_LISTENER = tf2_ros.TransformListener(_TF_BUFFER)
+    return _TF_BUFFER
+
+def lookup_robot_pose(timeout_sec=2.0):
+    """直接从 TF 读取 map->base_link 当前位姿。"""
+    transform = get_tf_buffer().lookup_transform(
+        MAP_FRAME,
+        ROBOT_BASE_FRAME,
+        rospy.Time(0),
+        rospy.Duration(timeout_sec),
+    )
+    pose = PoseStamped()
+    pose.header.stamp = transform.header.stamp
+    pose.header.frame_id = transform.header.frame_id
+    pose.pose.position.x = transform.transform.translation.x
+    pose.pose.position.y = transform.transform.translation.y
+    pose.pose.position.z = transform.transform.translation.z
+    pose.pose.orientation = transform.transform.rotation
+    return pose
+
 # --- 状态类实现 ---
 
 class CaptureBarPoseState(smach.State):
@@ -111,8 +138,7 @@ class CaptureBarPoseState(smach.State):
 
     def execute(self, userdata):
         try:
-            robot_odom = rospy.wait_for_message(ROBOT_POSE_TOPIC, Odometry, timeout=2.0)
-            current_pose = odometry_to_pose_stamped(robot_odom)
+            current_pose = lookup_robot_pose(timeout_sec=2.0)
             # 启动时机器人背朝吧台，这里先把朝向反过来。
             userdata.bar_pose_map = reverse_pose_orientation(current_pose)
             # 保存回吧台位姿，后面返回吧台时直接复用。
@@ -170,10 +196,8 @@ class BuildCustomerNavPoseState(smach.State):
 
     def execute(self, userdata):
         try:
-            # 1. 从 /map_to_baselink 读取当前时刻机器人的坐标
-            robot_odom = rospy.wait_for_message(ROBOT_POSE_TOPIC, Odometry, timeout=2.0)
-            # 2. 调用工具函数提取位姿信息
-            robot_pose = odometry_to_pose_stamped(robot_odom)
+            # 1. 直接从 TF 读取当前时刻机器人的 map -> base_link 位姿
+            robot_pose = lookup_robot_pose(timeout_sec=2.0)
             # 3. 计算逻辑：在机器人与人的连线上取定长（STAND_OFF_DISTANCE_M）位置
             #    这样算出来的点位不但距离合适，且机器人朝向会正对着顾客。
             userdata.customer_nav_pose = build_customer_nav_pose(
