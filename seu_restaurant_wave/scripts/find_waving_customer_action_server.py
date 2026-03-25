@@ -34,18 +34,19 @@ MARKER_TOPIC = "/restaurant_wave/target_marker"
 MARKER_NS = "restaurant_wave_target"
 DEFAULT_CAMERA_FRAME = "camera1_color_optical_frame"
 DEFAULT_RATE_HZ = 10.0
+CAMERA_BACKWARD_BIAS_M = -0.60
 
 
 def camera_point_to_base_link_point(camera_point):
-    """把 RealSense 光学坐标系下的点，按“与 base_link 共点”假设转成 base_link 坐标。
+    """把 RealSense 光学坐标系下的点转成带相机后移偏置的 base_link 坐标。
 
-    这里不再依赖相机 TF，只做最小轴变换：
+    这里不再依赖相机 TF，只做最小轴变换，并补一个相机沿机身后方 60cm 的偏置：
     1. optical z(前) -> base_link x(前)
     2. optical x(右) -> base_link y(左) 的负方向
     3. optical y(下) -> base_link z(上) 的负方向
     """
     return (
-        float(camera_point[2]),
+        float(camera_point[2]) + CAMERA_BACKWARD_BIAS_M,
         -float(camera_point[0]),
         -float(camera_point[1]),
     )

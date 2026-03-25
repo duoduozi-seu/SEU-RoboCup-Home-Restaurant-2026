@@ -73,11 +73,11 @@ class WaveGeometryTest(unittest.TestCase):
 
         self.assertGreater(int(rendered.sum()), 0)
 
-    def test_camera_point_to_base_link_point_uses_shared_origin_assumption(self):
-        """当相机与 base_link 共点时，应只做光学坐标到机器人坐标的轴变换。"""
+    def test_camera_point_to_base_link_point_applies_backward_camera_bias(self):
+        """相机后移 60cm 时，base_link x 应额外叠加该后移偏置。"""
         base_link_point = camera_point_to_base_link_point((0.2, -0.1, 1.5))
 
-        self.assertAlmostEqual(base_link_point[0], 1.5)
+        self.assertAlmostEqual(base_link_point[0], 0.9)
         self.assertAlmostEqual(base_link_point[1], -0.2)
         self.assertAlmostEqual(base_link_point[2], 0.1)
 
