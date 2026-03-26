@@ -12,6 +12,7 @@ from tf.transformations import quaternion_from_euler
 POSE_EQ_TOLERANCE = 1e-6
 FREE_SPACE_COST = 0
 UNKNOWN_SPACE_COST = -1
+FALLBACK_SAFE_NEIGHBOR_RADIUS_CELLS = 2
 
 
 def normalize_waypoint_name(name: str) -> str:
@@ -97,12 +98,21 @@ def costmap_cell_value(costmap_message, grid_x: int, grid_y: int):
     return int(costmap_message.data[index])
 
 
-def is_free_costmap_cell(costmap_message, grid_x: int, grid_y: int) -> bool:
-    """只把纯自由栅格视为可作为导航目标的候选点。"""
+def is_free_or_unknown_costmap_cell(costmap_message, grid_x: int, grid_y: int) -> bool:
+    """把自由栅格和 unknown 栅格都视为 fallback 候选允许区域。"""
     cell_value = costmap_cell_value(costmap_message, grid_x, grid_y)
-    if cell_value is None or cell_value == UNKNOWN_SPACE_COST:
+    if cell_value is None:
         return False
-    return cell_value == FREE_SPACE_COST
+    return cell_value in (FREE_SPACE_COST, UNKNOWN_SPACE_COST)
+
+
+def is_fallback_candidate_costmap_cell_acceptable(costmap_message, grid_x: int, grid_y: int) -> bool:
+    """fallback 候选点要求中心及其 5x5 邻域都落在自由或 unknown 栅格。"""
+    for offset_y in range(-FALLBACK_SAFE_NEIGHBOR_RADIUS_CELLS, FALLBACK_SAFE_NEIGHBOR_RADIUS_CELLS + 1):
+        for offset_x in range(-FALLBACK_SAFE_NEIGHBOR_RADIUS_CELLS, FALLBACK_SAFE_NEIGHBOR_RADIUS_CELLS + 1):
+            if not is_free_or_unknown_costmap_cell(costmap_message, grid_x + offset_x, grid_y + offset_y):
+                return False
+    return True
 
 
 def is_direct_goal_costmap_cell_acceptable(costmap_message, grid_x: int, grid_y: int) -> bool:
@@ -217,7 +227,7 @@ def resolve_accessible_pose(start_pose, requested_goal_pose, costmap_message, ma
         for offset_x, offset_y in build_ring_offsets(ring_index):
             candidate_grid_x = target_grid_x + offset_x
             candidate_grid_y = target_grid_y + offset_y
-            if not is_free_costmap_cell(costmap_message, candidate_grid_x, candidate_grid_y):
+            if not is_fallback_candidate_costmap_cell_acceptable(costmap_message, candidate_grid_x, candidate_grid_y):
                 continue
 
             candidate_world_x, candidate_world_y = grid_to_world(info, candidate_grid_x, candidate_grid_y)

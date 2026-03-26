@@ -149,17 +149,16 @@ class NavActionCoreTest(unittest.TestCase):
     def test_resolve_accessible_pose_selects_shortest_plan_on_first_reachable_ring(self):
         """一旦某层存在可达点，应只在该层内按最短全局路径择优。"""
         start_pose = _make_pose(0.5, 0.5)
-        goal_pose = _make_pose(2.5, 2.5, yaw=0.0)
-        costmap = _make_costmap(6, 6, resolution=1.0, default_value=100)
-        _set_cost(costmap, 2, 2, 100)
-        _set_cost(costmap, 2, 1, 0)
-        _set_cost(costmap, 1, 2, 0)
-        _set_cost(costmap, 4, 2, 0)
+        goal_pose = _make_pose(4.5, 4.5, yaw=0.0)
+        costmap = _make_costmap(9, 9, resolution=1.0, default_value=-1)
+        _set_cost(costmap, 4, 3, -1)
+        _set_cost(costmap, 3, 4, -1)
+        _set_cost(costmap, 5, 4, -1)
 
         plan_lengths = {
-            (2.5, 1.5): 3.0,
-            (1.5, 2.5): 5.0,
-            (4.5, 2.5): 1.0,
+            (4.5, 3.5): 3.0,
+            (3.5, 4.5): 5.0,
+            (5.5, 4.5): 6.0,
         }
 
         def plan_length_fn(candidate_pose):
@@ -173,34 +172,78 @@ class NavActionCoreTest(unittest.TestCase):
 
         self.assertTrue(result["adjusted"])
         self.assertEqual(result["ring_index"], 1)
-        self.assertAlmostEqual(result["resolved_pose"].pose.position.x, 2.5)
-        self.assertAlmostEqual(result["resolved_pose"].pose.position.y, 1.5)
+        self.assertAlmostEqual(result["resolved_pose"].pose.position.x, 4.5)
+        self.assertAlmostEqual(result["resolved_pose"].pose.position.y, 3.5)
         self.assertAlmostEqual(result["plan_length"], 3.0)
         self.assertAlmostEqual(_yaw_from_quaternion(result["resolved_pose"].pose.orientation), math.pi / 2.0, places=6)
 
     def test_resolve_accessible_pose_breaks_same_length_tie_by_distance_to_start(self):
         """同层同路径长度时，应优先选离出发点更近的候选点。"""
         start_pose = _make_pose(0.5, 0.5)
-        goal_pose = _make_pose(2.5, 2.5, yaw=0.0)
-        costmap = _make_costmap(6, 6, resolution=1.0, default_value=100)
-        _set_cost(costmap, 2, 2, 100)
-        _set_cost(costmap, 2, 1, 0)
-        _set_cost(costmap, 3, 2, 0)
+        goal_pose = _make_pose(4.5, 4.5, yaw=0.0)
+        costmap = _make_costmap(9, 9, resolution=1.0, default_value=-1)
+        _set_cost(costmap, 4, 3, -1)
+        _set_cost(costmap, 5, 4, -1)
 
         def plan_length_fn(candidate_pose):
             key = (
                 round(candidate_pose.pose.position.x, 1),
                 round(candidate_pose.pose.position.y, 1),
             )
-            if key in {(2.5, 1.5), (3.5, 2.5)}:
+            if key in {(4.5, 3.5), (5.5, 4.5)}:
                 return 4.0
             return None
 
         result = resolve_accessible_pose(start_pose, goal_pose, costmap, 2.0, plan_length_fn)
 
         self.assertTrue(result["adjusted"])
-        self.assertAlmostEqual(result["resolved_pose"].pose.position.x, 2.5)
-        self.assertAlmostEqual(result["resolved_pose"].pose.position.y, 1.5)
+        self.assertAlmostEqual(result["resolved_pose"].pose.position.x, 4.5)
+        self.assertAlmostEqual(result["resolved_pose"].pose.position.y, 3.5)
+
+    def test_resolve_accessible_pose_allows_unknown_center_in_fallback_candidates(self):
+        """fallback 候选中心点位于 unknown 时，只要 5x5 邻域合格也应允许。"""
+        start_pose = _make_pose(0.5, 0.5)
+        goal_pose = _make_pose(4.5, 4.5, yaw=0.0)
+        costmap = _make_costmap(9, 9, resolution=1.0, default_value=-1)
+
+        def plan_length_fn(candidate_pose):
+            key = (
+                round(candidate_pose.pose.position.x, 1),
+                round(candidate_pose.pose.position.y, 1),
+            )
+            if key == (4.5, 3.5):
+                return 2.0
+            return None
+
+        result = resolve_accessible_pose(start_pose, goal_pose, costmap, 2.0, plan_length_fn)
+
+        self.assertTrue(result["adjusted"])
+        self.assertAlmostEqual(result["resolved_pose"].pose.position.x, 4.5)
+        self.assertAlmostEqual(result["resolved_pose"].pose.position.y, 3.5)
+
+    def test_resolve_accessible_pose_rejects_fallback_candidate_with_blocked_5x5_neighborhood(self):
+        """fallback 候选点周围 5x5 只要混入障碍，就不能参与择优。"""
+        start_pose = _make_pose(0.5, 0.5)
+        goal_pose = _make_pose(4.5, 4.5, yaw=0.0)
+        costmap = _make_costmap(9, 9, resolution=1.0, default_value=-1)
+        _set_cost(costmap, 2, 3, 100)
+
+        def plan_length_fn(candidate_pose):
+            key = (
+                round(candidate_pose.pose.position.x, 1),
+                round(candidate_pose.pose.position.y, 1),
+            )
+            if key == (4.5, 3.5):
+                return 1.0
+            if key == (5.5, 4.5):
+                return 3.0
+            return None
+
+        result = resolve_accessible_pose(start_pose, goal_pose, costmap, 2.0, plan_length_fn)
+
+        self.assertTrue(result["adjusted"])
+        self.assertAlmostEqual(result["resolved_pose"].pose.position.x, 5.5)
+        self.assertAlmostEqual(result["resolved_pose"].pose.position.y, 4.5)
 
     def test_resolve_accessible_pose_raises_when_no_candidate_is_reachable(self):
         """搜索半径内若没有可达点，应明确报错。"""
