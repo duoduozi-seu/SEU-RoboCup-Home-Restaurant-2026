@@ -48,12 +48,13 @@ def reverse_pose_orientation(pose: PoseStamped) -> PoseStamped:
 
 
 def build_customer_nav_pose(robot_pose: PoseStamped, person_point, stand_off_distance: float) -> PoseStamped:
-    """根据顾客点和机器人当前位置，构造第一次靠近顾客的停靠位姿。
+    """根据顾客点和机器人当前位置，构造发给下游导航的原始请求位姿。
 
-    规则固定：
-    1. 停靠点落在“机器人 -> 顾客”的连线上；
-    2. 与顾客保持 ``stand_off_distance`` 米；
-    3. 机器人朝向顾客。
+    当前不在状态机里提前做最终停靠点/standoff 计算；下游 tracer_nav
+    会把这个原始目标点投影成当前地图上的实际可达点并持续重规划。
+    这里仅保留“位置取顾客点、朝向指向顾客”的原始语义。
+
+    `stand_off_distance` 参数为兼容旧调用链保留，当前不参与位置计算。
     """
     dx = person_point.x - robot_pose.pose.position.x
     dy = person_point.y - robot_pose.pose.position.y

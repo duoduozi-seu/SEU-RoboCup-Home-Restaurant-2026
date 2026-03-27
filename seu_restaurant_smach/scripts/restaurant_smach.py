@@ -5,7 +5,7 @@
 按照比赛的标准执行顺序，该脚本组织了以下核心流程：
 1. 启动时记录吧台位姿 (CAPTURE_BAR_POSE)
 2. 寻找挥手的顾客 (FIND_WAVING_CUSTOMER)
-3. 基于检测点计算导航位姿 (BUILD_CUSTOMER_NAV_POSE)
+3. 基于检测点封装原始导航请求位姿 (BUILD_CUSTOMER_NAV_POSE)
 4. 导航到顾客身旁 (NAV_TO_CUSTOMER)
 5. 对准顾客并开启交互点餐 (ALIGN_AND_TAKE_ORDER)
 6. 返回吧台进行汇报 (NAV_TO_BAR)
@@ -54,9 +54,9 @@ MAP_FRAME = "map"
 ROBOT_BASE_FRAME = "base_link"
 
 WAVE_TIMEOUT_SEC = 45.0                      # 搜寻挥手的最大尝试时间
-WAVE_ANGULAR_SPEED_RAD_S = 0.15              # 旋转搜索时的角速度
+WAVE_ANGULAR_SPEED_RAD_S = 0.25              # 旋转搜索时的角速度
 NAV_TIMEOUT_SEC = 120.0                      # 每次导航的最大允许时长
-STAND_OFF_DISTANCE_M = 1.0                   # 导航点应位于顾客前方 1.0 米
+STAND_OFF_DISTANCE_M = 1.0                   # 兼容旧接口保留；最终可达点由下游 tracer_nav 动态投影
 ALIGN_TIMEOUT_SEC = 20.0                     # 互动阶段对准人脸的超时
 DIALOG_TIMEOUT_SEC = 20.0                    # 对话识别（ASR）的超时
 ORDER_MAX_ROUNDS = 2                         # 询问订单时，若听不清最多重试次数
@@ -198,8 +198,8 @@ class BuildCustomerNavPoseState(smach.State):
         try:
             # 1. 直接从 TF 读取当前时刻机器人的 map -> base_link 位姿
             robot_pose = lookup_robot_pose(timeout_sec=2.0)
-            # 3. 计算逻辑：在机器人与人的连线上取定长（STAND_OFF_DISTANCE_M）位置
-            #    这样算出来的点位不但距离合适，且机器人朝向会正对着顾客。
+            # 3. 这里仅封装“顾客原始目标点 + 面向顾客”的请求位姿；
+            #    最终可达点与重规划由下游 tracer_nav 动态处理。
             userdata.customer_nav_pose = build_customer_nav_pose(
                 robot_pose,
                 userdata.customer_point_map,
