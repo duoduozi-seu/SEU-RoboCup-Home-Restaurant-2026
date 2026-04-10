@@ -14,7 +14,7 @@ from geometry_msgs.msg import Point, PoseStamped, Twist
 from sensor_msgs.msg import Image
 from seu_restaurant_msgs.msg import FindWavingCustomerAction, FindWavingCustomerResult
 from tf.transformations import euler_from_quaternion
-from visualization_msgs.msg import Marker
+from visualization_msgs.msg import Marker, MarkerArray
 
 # 这个入口脚本依赖同目录的 `wave_detector_core.py`。
 # 这里主动补上当前脚本目录，保证直接运行 scripts 文件时导入稳定。
@@ -76,13 +76,13 @@ def base_link_point_to_map_point(robot_pose, base_link_point):
     return map_point
 
 
-def build_target_marker(person_point_map):
+def build_target_marker(person_point_map, marker_id=0):
     """为当前目标人构造 RViz marker。"""
     marker = Marker()
     marker.header.stamp = rospy.Time(0)
     marker.header.frame_id = "map"
     marker.ns = MARKER_NS
-    marker.id = 0
+    marker.id = int(marker_id)
     marker.type = Marker.SPHERE
     marker.action = Marker.ADD
     marker.pose.position.x = person_point_map.x
@@ -99,15 +99,23 @@ def build_target_marker(person_point_map):
     return marker
 
 
-def build_delete_marker():
+def build_delete_marker(marker_id=0):
     """构造删除 marker 的消息，避免 RViz 残留旧点。"""
     marker = Marker()
     marker.header.stamp = rospy.Time(0)
     marker.header.frame_id = "map"
     marker.ns = MARKER_NS
-    marker.id = 0
+    marker.id = int(marker_id)
     marker.action = Marker.DELETE
     return marker
+
+
+def build_target_marker_array(person_points_map):
+    """把多个目标点打包成 MarkerArray。"""
+    marker_array = MarkerArray()
+    for marker_id, person_point_map in enumerate(person_points_map or []):
+        marker_array.markers.append(build_target_marker(person_point_map, marker_id=marker_id))
+    return marker_array
 
 
 class FindWavingCustomerActionServer:
@@ -119,9 +127,10 @@ class FindWavingCustomerActionServer:
 
         self.cmd_vel_pub = rospy.Publisher(CMD_VEL_TOPIC, Twist, queue_size=10)
         self.debug_image_pub = rospy.Publisher(DEBUG_IMAGE_TOPIC, Image, queue_size=1)
-        self.marker_pub = rospy.Publisher(MARKER_TOPIC, Marker, queue_size=1)
+        self.marker_pub = rospy.Publisher(MARKER_TOPIC, MarkerArray, queue_size=1)
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+        self._last_marker_count = 0
 
         self.server = actionlib.SimpleActionServer(
             ACTION_NAME,
@@ -180,21 +189,25 @@ class FindWavingCustomerActionServer:
         message.data = debug_image.tobytes()
         self.debug_image_pub.publish(message)
 
-    def _publish_target_marker(self, person_point_map):
-        """持续发布当前选中顾客的 marker。"""
-        if person_point_map is None:
-            self.marker_pub.publish(build_delete_marker())
-            return
-        self.marker_pub.publish(build_target_marker(person_point_map))
+    def _publish_target_markers(self, person_points_map):
+        """发布当前目标顾客集合的 MarkerArray。"""
+        person_points_map = list(person_points_map or [])
+        marker_array = build_target_marker_array(person_points_map)
+
+        for marker_id in range(len(person_points_map), self._last_marker_count):
+            marker_array.markers.append(build_delete_marker(marker_id=marker_id))
+
+        self.marker_pub.publish(marker_array)
+        self._last_marker_count = len(person_points_map)
 
     def execute_cb(self, goal):
         """执行一次完整的“原地转一圈找最近挥手人”流程。"""
-        result = FindWavingCustomerResult(success=False, error_msg="", depth_m=0.0)
+        result = FindWavingCustomerResult(success=False, error_msg="")
         angular_speed = goal.angular_speed_rad_s if abs(goal.angular_speed_rad_s) > 1e-6 else 0.15
         timeout_sec = goal.timeout_sec if goal.timeout_sec > 0.0 else (2.0 * math.pi / abs(angular_speed))
         scan_duration = min(timeout_sec, 2.0 * math.pi / abs(angular_speed))
         detector = None
-        best_candidate = None
+        best_candidates_by_track = {}
 
         try:
             detector = WaveDetectorRuntime()
@@ -219,47 +232,74 @@ class FindWavingCustomerActionServer:
                 if frame_result is not None:
                     self._publish_debug_image(frame_result.get("debug_image"))
 
-                candidate = None
+                selected_candidate = None
+                current_candidates = []
                 if frame_result is not None:
-                    candidate = frame_result.get("selected_candidate")
+                    selected_candidate = frame_result.get("selected_candidate")
+                    current_candidates = frame_result.get("current_candidates") or []
 
-                if candidate is not None:
+                if selected_candidate is not None:
                     try:
-                        person_point_map = self._camera_point_to_map(candidate["camera_point"])
+                        person_point_map = self._camera_point_to_map(selected_candidate["camera_point"])
                     except Exception:
                         person_point_map = None
                     if person_point_map is not None:
-                        self._publish_target_marker(person_point_map)
-                        candidate["person_point_map"] = person_point_map
-                        if best_candidate is None or candidate["depth_m"] < best_candidate["depth_m"]:
-                            best_candidate = candidate
+                        self._publish_target_markers([person_point_map])
                     else:
-                        self._publish_target_marker(None)
+                        self._publish_target_markers([])
                 else:
-                    self._publish_target_marker(None)
+                    self._publish_target_markers([])
+
+                for candidate in current_candidates:
+                    if not candidate.get("is_waving", False):
+                        continue
+                    if float(candidate.get("depth_m", 0.0)) <= 0.0:
+                        continue
+                    if candidate.get("camera_point") is None:
+                        continue
+                    try:
+                        person_point_map = self._camera_point_to_map(candidate["camera_point"])
+                    except Exception:
+                        continue
+
+                    track_id = candidate.get("track_id")
+                    if track_id is None:
+                        continue
+
+                    current_best = best_candidates_by_track.get(track_id)
+                    if current_best is None or float(candidate["depth_m"]) < float(current_best["depth_m"]):
+                        best_candidates_by_track[track_id] = {
+                            "track_id": track_id,
+                            "depth_m": float(candidate["depth_m"]),
+                            "person_point_map": person_point_map,
+                        }
                 rate.sleep()
 
             self._stop_robot()
-            if best_candidate is None:
-                self._publish_target_marker(None)
+            best_candidates = sorted(
+                best_candidates_by_track.values(),
+                key=lambda item: float(item["depth_m"]),
+            )[:2]
+
+            if not best_candidates:
+                self._publish_target_markers([])
                 result.error_msg = "no waving customer found during one full scan"
                 self.server.set_aborted(result, result.error_msg)
                 return
 
             result.success = True
-            result.depth_m = float(best_candidate["depth_m"])
-            result.person_point_map = best_candidate["person_point_map"]
-            self._publish_target_marker(best_candidate["person_point_map"])
+            result.person_points_map = [candidate["person_point_map"] for candidate in best_candidates]
+            self._publish_target_markers(result.person_points_map)
             self.server.set_succeeded(result)
         except Exception as exc:
             self._stop_robot()
-            self._publish_target_marker(None)
+            self._publish_target_markers([])
             result.error_msg = "find waving customer failed: {}".format(exc)
             self.server.set_aborted(result, result.error_msg)
         finally:
             self._stop_robot()
-            if best_candidate is None:
-                self._publish_target_marker(None)
+            if not best_candidates_by_track:
+                self._publish_target_markers([])
             if detector is not None:
                 detector.close()
 

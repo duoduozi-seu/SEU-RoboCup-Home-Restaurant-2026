@@ -7,7 +7,7 @@
 
 ## `seu_restaurant_smach`
 
-`seu_restaurant_smach` 是 Restaurant 任务的主状态机包，负责把挥手检测、导航、桌边交互、订单播报和回送流程串成一条完整任务链。
+`seu_restaurant_smach` 是 Restaurant 任务的主状态机包，负责把挥手检测、导航、桌边交互、订单播报和回送流程串成一条完整的双人服务任务链。
 
 ## 用法命令
 
@@ -40,12 +40,12 @@ rosrun seu_restaurant_smach restaurant_smach.py
 
 ## 技术栈 / Pipeline
 
-1. 记录初始吧台位姿。
-2. 调用 `seu_restaurant_wave` 寻找挥手顾客。
-3. 计算顾客前方导航位姿并调用 `seu_nav` 接近目标。
-4. 调用 `seu_restaurant_interaction` 完成桌边对齐、问单和订单解析。
-5. 返回吧台，通过 `seu_voice` 复述订单。
-6. 再次回到顾客处并播报任务完成语。
+1. 记录初始吧台位姿，并保存一个面朝吧台的回归位姿。
+2. 调用 `seu_restaurant_wave` 一次寻找最多两位挥手顾客。
+3. 顶层状态机维护顾客队列，循环调用“单人服务子状态机”。
+4. 单人服务子状态机完成接近顾客、接单、回吧台播报、回顾客送餐。
+5. 每服务完一位顾客后，直接导航回吧台初始坐标与背对吧台的初始朝向。
+6. 共完成两位顾客后结束任务。
 
 ---
 *SEU RoboCup Team 2026*

@@ -2,20 +2,19 @@
 # -*- coding: utf-8 -*-
 """测试挥手候选目标筛选与调试图像逻辑。"""
 
-import os
 import sys
 import unittest
+from pathlib import Path
 
 import numpy as np
 from geometry_msgs.msg import PoseStamped
-from visualization_msgs.msg import Marker
+from visualization_msgs.msg import Marker, MarkerArray
 
 
-WORKSPACE_SRC = "/home/duo/GPSR_ws_zyd/catkin_robocup_2/src/GPSR_code/src"
-SCRIPT_DIR = os.path.join(WORKSPACE_SRC, "seu_restaurant_wave", "scripts")
+SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
 DEVEL_PYTHON_DIR = "/home/duo/GPSR_ws_zyd/catkin_robocup_2/devel/lib/python3/dist-packages"
-if SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, SCRIPT_DIR)
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 if DEVEL_PYTHON_DIR not in sys.path:
     sys.path.insert(0, DEVEL_PYTHON_DIR)
 
@@ -24,10 +23,15 @@ from find_waving_customer_action_server import (
     MARKER_TOPIC,
     base_link_point_to_map_point,
     build_delete_marker,
+    build_target_marker_array,
     build_target_marker,
     camera_point_to_base_link_point,
 )
-from wave_detector_core import render_debug_image, select_nearest_waving_candidate
+from wave_detector_core import (
+    render_debug_image,
+    select_nearest_waving_candidate,
+    select_nearest_waving_candidates,
+)
 from tf.transformations import quaternion_from_euler
 
 
@@ -45,6 +49,21 @@ class WaveGeometryTest(unittest.TestCase):
         selected = select_nearest_waving_candidate(candidates)
 
         self.assertEqual(selected["depth_m"], 1.2)
+
+    def test_select_nearest_waving_candidates_returns_two_nearest_people(self):
+        """当有多个挥手人时，应返回最近的两个人且按距离排序。"""
+        candidates = [
+            {"is_waving": True, "depth_m": 2.4, "track_id": 1},
+            {"is_waving": True, "depth_m": 1.2, "track_id": 2},
+            {"is_waving": True, "depth_m": 1.8, "track_id": 3},
+            {"is_waving": False, "depth_m": 0.8, "track_id": 4},
+        ]
+
+        selected = select_nearest_waving_candidates(candidates, max_count=2)
+
+        self.assertEqual(len(selected), 2)
+        self.assertEqual(selected[0]["track_id"], 2)
+        self.assertEqual(selected[1]["track_id"], 3)
 
     def test_select_nearest_waving_candidate_ignores_invalid_depth(self):
         """深度无效的挥手目标不能被选中。"""
@@ -130,6 +149,21 @@ class WaveGeometryTest(unittest.TestCase):
         self.assertEqual(marker.pose.position.z, 0.3)
         self.assertGreater(marker.scale.x, 0.0)
         self.assertGreater(marker.color.a, 0.0)
+
+    def test_build_target_marker_array_contains_multiple_points(self):
+        """需要同时显示多人时，应生成包含多个 marker 的数组。"""
+        points = [
+            type("PointLike", (), {"x": 1.2, "y": -0.4, "z": 0.3})(),
+            type("PointLike", (), {"x": 2.1, "y": 0.6, "z": 0.1})(),
+        ]
+
+        marker_array = build_target_marker_array(points)
+
+        self.assertIsInstance(marker_array, MarkerArray)
+        self.assertEqual(len(marker_array.markers), 2)
+        self.assertEqual(marker_array.markers[0].id, 0)
+        self.assertEqual(marker_array.markers[1].id, 1)
+        self.assertEqual(marker_array.markers[1].pose.position.x, 2.1)
 
     def test_build_delete_marker_clears_previous_marker(self):
         """没有目标时，应发布 DELETE marker 清理 RViz 中的旧点。"""

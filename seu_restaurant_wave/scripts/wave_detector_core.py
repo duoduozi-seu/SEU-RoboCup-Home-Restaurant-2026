@@ -55,6 +55,14 @@ def select_nearest_waving_candidate(candidates: Iterable[dict]) -> Optional[dict
     Returns:
         最近的有效挥手候选；若没有满足条件的候选，则返回 ``None``。
     """
+    nearest_candidates = select_nearest_waving_candidates(candidates, max_count=1)
+    if not nearest_candidates:
+        return None
+    return nearest_candidates[0]
+
+
+def select_nearest_waving_candidates(candidates: Iterable[dict], max_count: int = 2):
+    """从候选列表中挑出最近的若干个有效挥手目标。"""
     valid_candidates = []
     for candidate in candidates:
         if not candidate.get("is_waving", False):
@@ -64,10 +72,8 @@ def select_nearest_waving_candidate(candidates: Iterable[dict]) -> Optional[dict
             continue
         valid_candidates.append(candidate)
 
-    if not valid_candidates:
-        return None
-
-    return min(valid_candidates, key=lambda item: float(item["depth_m"]))
+    valid_candidates.sort(key=lambda item: float(item["depth_m"]))
+    return valid_candidates[: max(0, int(max_count))]
 
 
 def clamp_box(x1, y1, x2, y2, width, height):
@@ -246,28 +252,19 @@ class WaveDetectorRuntime:
         detections = self._extract_detections(color_image, depth_frame)
         current_track_ids = self._update_tracks(detections)
 
-        current_candidates = [self.tracks[track_id] for track_id in current_track_ids]
+        current_candidates = [self._clone_track_candidate(track_id) for track_id in current_track_ids]
+        current_candidates = self._attach_camera_points_to_candidates(depth_frame, current_candidates)
         selected = select_nearest_waving_candidate(current_candidates)
         debug_image = render_debug_image(color_image, current_candidates, selected)
         if selected is None:
             return {
                 "selected_candidate": None,
+                "current_candidates": current_candidates,
                 "debug_image": debug_image,
             }
-
-        depth_x, depth_y = selected["depth_pixel"]
-        intrinsics = depth_frame.get_profile().as_video_stream_profile().get_intrinsics()
-        camera_point = self.rs.rs2_deproject_pixel_to_point(
-            intrinsics,
-            [float(depth_x), float(depth_y)],
-            float(selected["depth_m"]),
-        )
         return {
-            "selected_candidate": {
-                "depth_m": float(selected["depth_m"]),
-                "camera_point": tuple(camera_point),
-                "depth_pixel": (int(depth_x), int(depth_y)),
-            },
+            "selected_candidate": selected,
+            "current_candidates": current_candidates,
             "debug_image": debug_image,
         }
 
@@ -432,6 +429,35 @@ class WaveDetectorRuntime:
             "is_waving": False,
         }
         return track_id
+
+    def _clone_track_candidate(self, track_id):
+        """为当前帧导出一个只读候选副本，避免外部修改内部轨迹。"""
+        candidate = dict(self.tracks[track_id])
+        candidate["track_id"] = track_id
+        return candidate
+
+    def _attach_camera_points_to_candidates(self, depth_frame, candidates):
+        """给当前候选补上相机坐标，便于上层做 map 投影与去重。"""
+        intrinsics = depth_frame.get_profile().as_video_stream_profile().get_intrinsics()
+        enriched_candidates = []
+
+        for candidate in candidates:
+            enriched_candidate = dict(candidate)
+            enriched_candidate["camera_point"] = None
+            depth_m = float(enriched_candidate.get("depth_m", 0.0))
+            depth_pixel = enriched_candidate.get("depth_pixel")
+            if depth_m > 0.0 and depth_pixel is not None:
+                depth_x, depth_y = depth_pixel
+                enriched_candidate["camera_point"] = tuple(
+                    self.rs.rs2_deproject_pixel_to_point(
+                        intrinsics,
+                        [float(depth_x), float(depth_y)],
+                        depth_m,
+                    )
+                )
+            enriched_candidates.append(enriched_candidate)
+
+        return enriched_candidates
 
     def _update_wave_status(self, track, point_map):
         """根据肩肘腕相对关系更新“当前人是否挥手”。"""

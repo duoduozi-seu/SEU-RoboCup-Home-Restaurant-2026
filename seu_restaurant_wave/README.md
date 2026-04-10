@@ -7,7 +7,7 @@
 
 ## `seu_restaurant_wave`
 
-`seu_restaurant_wave` 负责原地旋转搜索挥手顾客，并把最近目标转换到 `map` 坐标系后通过 Action 返回给上层状态机。
+`seu_restaurant_wave` 负责原地旋转搜索挥手顾客，并把最多两个最近目标转换到 `map` 坐标系后通过 Action 返回给上层状态机。
 
 ## 用法命令
 
@@ -45,8 +45,8 @@ python3 src/Restaurant/src/seu_restaurant_wave/client_test/wave_test_client.py
 
 1. RealSense 采集彩色图和深度图。
 2. YOLO Pose 提取人体关键点。
-3. 时序规则判断是否为挥手目标，并选择最近顾客。
-4. 将相机坐标转换到 `map` 坐标系，返回 `person_point_map`。
+3. 时序规则判断是否为挥手目标，并按距离排序筛出最近的两位顾客。
+4. 将相机坐标转换到 `map` 坐标系，返回 `person_points_map[]`。
 5. 同时发布调试图像和 RViz marker，方便联调。
 
 ---
