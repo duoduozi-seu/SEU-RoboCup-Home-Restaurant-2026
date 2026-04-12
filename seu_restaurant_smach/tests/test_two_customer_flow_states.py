@@ -173,6 +173,32 @@ def make_point(x, y, z=0.0):
 class TwoCustomerFlowStateTest(unittest.TestCase):
     """双人调度相关状态测试。"""
 
+    def test_build_bar_order_repeat_text_should_use_fixed_sentence_and_digit_words(self):
+        module = load_module()
+
+        repeat_text = module.build_bar_order_repeat_text(["cola", "chips"], [3, 1])
+
+        self.assertEqual(
+            repeat_text,
+            "The customer ordered three cola, one chips, please give me them.",
+        )
+
+    def test_speak_order_at_bar_state_should_use_orderlist_instead_of_original_order_text(self):
+        module = load_module()
+        userdata = types.SimpleNamespace(
+            order_text="I would like three bottles of cola and one bag of chips.",
+            orderlist=["cola", "chips"],
+            orderlist_num=[3, 1],
+        )
+
+        with patch.object(module, "say_once") as say_once_mock:
+            outcome = module.SpeakOrderAtBarState().execute(userdata)
+
+        self.assertEqual(outcome, "success")
+        say_once_mock.assert_called_once_with(
+            "The customer ordered three cola, one chips, please give me them."
+        )
+
     def test_find_waving_customers_state_should_store_multiple_points(self):
         module = load_module()
         FakeActionClient.next_result = types.SimpleNamespace(

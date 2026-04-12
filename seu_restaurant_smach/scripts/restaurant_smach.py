@@ -63,8 +63,23 @@ ALIGN_TIMEOUT_SEC = 20.0
 DIALOG_TIMEOUT_SEC = 20.0
 ORDER_MAX_ROUNDS = 2
 ASK_ORDER_TEXT = "Hello. What would you like to order?"
-ORDER_REPEAT_PREFIX = "The customer ordered: "
+ORDER_REPEAT_PREFIX = "The customer ordered "
+ORDER_REPEAT_SUFFIX = ", please give me them."
 FINAL_DELIVER_TEXT = "I am back. Please take your order. Enjoy your meal."
+
+# 把 0-9 的数字直接映射成英文单词，方便英文语音模型更稳定地读出来。
+COUNT_WORD_MAP = {
+    0: "zero",
+    1: "one",
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+    9: "nine",
+}
 
 _TF_BUFFER = None
 _TF_LISTENER = None
@@ -86,6 +101,42 @@ def say_once(text: str):
     response = client.call(seu_voiceRequest(text=text))
     if not response.state:
         raise RuntimeError("voice service failed: {}".format(response.errormsg))
+
+
+def convert_count_to_spoken_word(item_count):
+    """把数量转换成适合英文播报的单词；仅对 0-9 做简单映射。"""
+    try:
+        count_value = int(item_count)
+    except (TypeError, ValueError):
+        return str(item_count)
+    return COUNT_WORD_MAP.get(count_value, str(count_value))
+
+
+def build_bar_order_repeat_text(orderlist, orderlist_num, fallback_order_text=""):
+    """把 LLM 抽取出的订单结果拼成吧台前固定复述语句。"""
+    repeat_parts = []
+
+    # 这里按“数量英文词 + 物品名”直接拼接，不额外处理量词或单复数。
+    for item_name, item_count in zip(list(orderlist or []), list(orderlist_num or [])):
+        clean_item_name = str(item_name).strip()
+        if not clean_item_name:
+            continue
+        repeat_parts.append(
+            "{} {}".format(
+                convert_count_to_spoken_word(item_count),
+                clean_item_name,
+            )
+        )
+
+    if repeat_parts:
+        return ORDER_REPEAT_PREFIX + ", ".join(repeat_parts) + ORDER_REPEAT_SUFFIX
+
+    # 如果上游异常导致列表为空，则保留原句兜底，避免这里直接播报失败。
+    clean_fallback_order_text = str(fallback_order_text or "").strip()
+    if clean_fallback_order_text:
+        return ORDER_REPEAT_PREFIX + clean_fallback_order_text
+
+    return ORDER_REPEAT_PREFIX.strip() + ORDER_REPEAT_SUFFIX
 
 
 def get_tf_buffer():
@@ -332,11 +383,20 @@ class SpeakOrderAtBarState(smach.State):
     """在吧台复述订单。"""
 
     def __init__(self):
-        smach.State.__init__(self, outcomes=["success", "failure"], input_keys=["order_text"])
+        smach.State.__init__(
+            self,
+            outcomes=["success", "failure"],
+            input_keys=["order_text", "orderlist", "orderlist_num"],
+        )
 
     def execute(self, userdata):
         try:
-            say_once(ORDER_REPEAT_PREFIX + userdata.order_text)
+            repeat_text = build_bar_order_repeat_text(
+                getattr(userdata, "orderlist", []),
+                getattr(userdata, "orderlist_num", []),
+                getattr(userdata, "order_text", ""),
+            )
+            say_once(repeat_text)
             return "success"
         except Exception:
             return "failure"
