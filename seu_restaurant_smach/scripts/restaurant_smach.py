@@ -293,7 +293,7 @@ class AlignAndTakeOrderState(smach.State):
         smach.State.__init__(
             self,
             outcomes=["success", "failure"],
-            output_keys=["service_pose_map", "order_text", "orderlist"],
+            output_keys=["service_pose_map", "order_text", "orderlist", "orderlist_num"],
         )
 
     def execute(self, userdata):
@@ -324,6 +324,7 @@ class AlignAndTakeOrderState(smach.State):
         userdata.service_pose_map = result.service_pose_map
         userdata.order_text = result.order_text
         userdata.orderlist = result.orderlist
+        userdata.orderlist_num = result.orderlist_num
         return "success"
 
 
@@ -408,7 +409,7 @@ def build_service_one_customer_state_machine():
     service_sm = smach.StateMachine(
         outcomes=["success", "failure"],
         input_keys=["customer_point_map", "bar_pose_map"],
-        output_keys=["service_pose_map", "order_text", "orderlist"],
+        output_keys=["service_pose_map", "order_text", "orderlist", "orderlist_num"],
     )
 
     with service_sm:
@@ -467,6 +468,8 @@ def build_top_level_state_machine():
     sm.userdata.served_customer_count = 0
     sm.userdata.detected_customer_points = []
     sm.userdata.pending_customer_points = []
+    sm.userdata.orderlist = []
+    sm.userdata.orderlist_num = []
 
     service_one_customer_sm = build_service_one_customer_state_machine()
 

@@ -10,6 +10,7 @@ string error_msg
 geometry_msgs/PoseStamped service_pose_map
 string order_text
 string[] orderlist
+int32[] orderlist_num
 uint8 rounds_used
 ---
 # Feedback

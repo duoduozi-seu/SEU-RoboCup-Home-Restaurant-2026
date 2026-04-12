@@ -24,6 +24,7 @@ if SCRIPT_DIR not in sys.path:
 from restaurant_order_llm_action_server import (  # pylint: disable=import-error
     build_order_parse_prompt,
     normalize_model_output_items,
+    parse_item_count_entry,
     parse_item_list_from_model_text,
     parse_order_items_with_llm,
 )
@@ -53,36 +54,44 @@ class OrderParserCoreTest(unittest.TestCase):
         self.assertIn(sentence, prompt)
         self.assertIn("Few-shot examples", prompt)
         self.assertIn("Output only one JSON array", prompt)
+        self.assertIn("item_name_count", prompt)
 
     def test_parse_item_list_from_model_text_should_extract_json_array(self):
-        """模型返回标准 JSON 数组时，应解析出规范化列表。"""
-        text = '["cola", " chips ", "mineral water"]'
+        """模型返回标准 JSON 数组时，应解析出规范化后的 item_count 列表。"""
+        text = '["cola_2", " chips_1 ", "mineral water_1"]'
         self.assertEqual(
             parse_item_list_from_model_text(text),
-            ["cola", "chips", "mineral water"],
+            ["cola_2", "chips_1", "mineral water_1"],
         )
 
     def test_parse_item_list_from_model_text_should_ignore_wrapping_text(self):
         """即使模型前后夹带少量废话，也应尽量提取第一个数组。"""
-        text = 'Result: ["cola", "chips", "mineral water"] thanks'
+        text = 'Result: ["cola_2", "chips_1", "mineral water_1"] thanks'
         self.assertEqual(
             parse_item_list_from_model_text(text),
-            ["cola", "chips", "mineral water"],
+            ["cola_2", "chips_1", "mineral water_1"],
         )
 
-    def test_normalize_model_output_items_should_drop_invalid_values(self):
-        """规范化阶段应过滤空串和非字符串元素。"""
+    def test_parse_item_count_entry_should_default_count_to_one_when_missing(self):
+        """模型漏掉数量后，Python 端默认补成 1。"""
         self.assertEqual(
-            normalize_model_output_items([" Cola ", "", None, "mineral water"]),
-            ["cola", "mineral water"],
+            parse_item_count_entry("Cola"),
+            ("cola", 1),
+        )
+
+    def test_normalize_model_output_items_should_drop_invalid_values_and_merge_duplicates(self):
+        """规范化阶段应过滤无效值，并按首次出现顺序合并同类物品数量。"""
+        self.assertEqual(
+            normalize_model_output_items([" Cola_2 ", "", None, "cola", "mineral water_1"]),
+            ["cola_3", "mineral water_1"],
         )
 
     def test_parse_order_items_with_llm_should_return_items_when_response_is_valid(self):
-        """一次有效返回时，应直接给出最终物品列表。"""
+        """一次有效返回时，应直接给出最终 item_count 列表。"""
         fake_api_core = FakeApiCore([
             {
                 "ok": True,
-                "text": '["cola", "chips", "mineral water"]',
+                "text": '["cola_2", "chips_1", "mineral water_1"]',
                 "error": "",
             }
         ])
@@ -91,7 +100,7 @@ class OrderParserCoreTest(unittest.TestCase):
             fake_api_core,
         )
         self.assertTrue(success)
-        self.assertEqual(items, ["cola", "chips", "mineral water"])
+        self.assertEqual(items, ["cola_2", "chips_1", "mineral water_1"])
         self.assertEqual(error_msg, "")
 
     def test_parse_order_items_with_llm_should_retry_after_invalid_format(self):
@@ -104,7 +113,7 @@ class OrderParserCoreTest(unittest.TestCase):
             },
             {
                 "ok": True,
-                "text": '["cola", "chips"]',
+                "text": '["cola_1", "chips_1"]',
                 "error": "",
             },
         ])
@@ -113,7 +122,7 @@ class OrderParserCoreTest(unittest.TestCase):
             fake_api_core,
         )
         self.assertTrue(success)
-        self.assertEqual(items, ["cola", "chips"])
+        self.assertEqual(items, ["cola_1", "chips_1"])
         self.assertEqual(error_msg, "")
         self.assertEqual(len(fake_api_core.prompt_list), 2)
         self.assertIn("Retry instruction", fake_api_core.prompt_list[1])

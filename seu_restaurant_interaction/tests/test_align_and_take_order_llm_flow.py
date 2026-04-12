@@ -28,12 +28,13 @@ class DummyTwist:
 
 
 class DummyAlignAndTakeOrderResult:
-    def __init__(self, success=False, error_msg="", order_text="", rounds_used=0, orderlist=None):
+    def __init__(self, success=False, error_msg="", order_text="", rounds_used=0, orderlist=None, orderlist_num=None):
         self.success = success
         self.error_msg = error_msg
         self.order_text = order_text
         self.rounds_used = rounds_used
         self.orderlist = list(orderlist or [])
+        self.orderlist_num = list(orderlist_num or [])
         self.service_pose_map = None
 
 
@@ -120,6 +121,11 @@ def load_module():
         SimpleActionServer=object,
         SimpleActionClient=FakeLlmActionClient,
     )
+    fake_tf2_ros = _make_module(
+        'tf2_ros',
+        Buffer=lambda: types.SimpleNamespace(),
+        TransformListener=lambda buffer: types.SimpleNamespace(buffer=buffer),
+    )
     fake_geometry_msgs_msg = _make_module('geometry_msgs.msg', PoseStamped=DummyPoseStamped, Twist=DummyTwist)
     fake_geometry_msgs = _make_module('geometry_msgs', msg=fake_geometry_msgs_msg)
     fake_nav_msgs_msg = _make_module('nav_msgs.msg', Odometry=DummyOdometry)
@@ -159,6 +165,7 @@ def load_module():
         {
             'rospy': fake_rospy,
             'actionlib': fake_actionlib,
+            'tf2_ros': fake_tf2_ros,
             'geometry_msgs': fake_geometry_msgs,
             'geometry_msgs.msg': fake_geometry_msgs_msg,
             'nav_msgs': fake_nav_msgs,
@@ -191,7 +198,10 @@ class AlignAndTakeOrderLlmFlowTest(unittest.TestCase):
         server.cmd_vel_pub = types.SimpleNamespace(publish=lambda msg: None)
         server.voice_client = None
         server.speech_client = None
+        server.tf_buffer = types.SimpleNamespace()
+        server.tf_listener = types.SimpleNamespace()
         server._align_to_customer = lambda timeout_sec: True
+        server._get_current_pose = lambda: types.SimpleNamespace(name='pose')
         server._stop_robot = lambda: None
         server._say = lambda text: None
         output_iter = iter(listen_outputs)
@@ -202,7 +212,7 @@ class AlignAndTakeOrderLlmFlowTest(unittest.TestCase):
         """LLM 返回 no_info 时，应重新回到让主人说指令的流程。"""
         FakeLlmActionClient.planned_results = [
             types.SimpleNamespace(success=False, error_msg='no_info', items=[]),
-            types.SimpleNamespace(success=True, error_msg='', items=['cola', 'chips']),
+            types.SimpleNamespace(success=True, error_msg='', items=['cola_2', 'chips_1']),
         ]
         server = self.build_server([
             'first unclear order', 'yes',
@@ -216,7 +226,25 @@ class AlignAndTakeOrderLlmFlowTest(unittest.TestCase):
         self.assertIsNone(server.server.aborted_result)
         self.assertEqual(server.server.succeeded_result.order_text, 'second clear order')
         self.assertEqual(server.server.succeeded_result.orderlist, ['cola', 'chips'])
+        self.assertEqual(server.server.succeeded_result.orderlist_num, [2, 1])
         self.assertEqual(server.server.succeeded_result.rounds_used, 2)
+
+    def test_execute_cb_should_abort_when_llm_returns_invalid_item_count_list(self):
+        """LLM 成功但返回非法 item_count 列表时，应直接失败退出。"""
+        FakeLlmActionClient.planned_results = [
+            types.SimpleNamespace(success=True, error_msg='', items=['cola_0']),
+        ]
+        server = self.build_server(['order text', 'yes'])
+        goal = types.SimpleNamespace(ask_text='ask', max_rounds=1, align_timeout_sec=1.0, dialog_timeout_sec=1.0)
+
+        server.execute_cb(goal)
+
+        self.assertIsNone(server.server.succeeded_result)
+        self.assertIsNotNone(server.server.aborted_result)
+        self.assertEqual(
+            server.server.aborted_result.error_msg,
+            'llm parse failed or network error: invalid item_count list',
+        )
 
     def test_execute_cb_should_abort_when_llm_returns_non_no_info_error(self):
         """LLM 返回非 no_info 错误时，应直接失败退出。"""

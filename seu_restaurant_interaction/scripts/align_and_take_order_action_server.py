@@ -3,6 +3,7 @@
 """餐厅题桌边微调与接单 action server。"""
 
 import os
+import re
 import sys
 
 import actionlib
@@ -61,6 +62,8 @@ KEYPOINT_INDEX = {
     "left_hip": 11,
     "right_hip": 12,
 }
+DEFAULT_ITEM_COUNT = 1
+ITEM_COUNT_PATTERN = re.compile(r"^(?P<name>.+?)_(?P<count>\d+)$")
 
 
 def clamp_box(x1, y1, x2, y2, width, height):
@@ -74,6 +77,62 @@ def clamp_box(x1, y1, x2, y2, width, height):
     if y2 <= y1:
         y2 = min(height - 1, y1 + 1)
     return x1, y1, x2, y2
+
+
+def normalize_order_item_name(item_name):
+    """把 LLM 返回的物品名整理成稳定短语。"""
+    if not isinstance(item_name, str):
+        return ""
+
+    clean_text = item_name.strip().lower()
+    clean_text = clean_text.replace("-", " ")
+    clean_text = clean_text.replace("_", " ")
+    clean_text = re.sub(r"\s+", " ", clean_text)
+    if not clean_text:
+        return ""
+    return clean_text
+
+
+def parse_item_count_text(item_text):
+    """把单个 `item_count` 字符串解析成 `(item_name, item_count)`。"""
+    if not isinstance(item_text, str):
+        return "", 0
+
+    clean_text = item_text.strip().lower()
+    clean_text = clean_text.replace("-", " ")
+    clean_text = re.sub(r"\s*_\s*", "_", clean_text)
+    clean_text = re.sub(r"\s+", " ", clean_text)
+    if not clean_text:
+        return "", 0
+
+    item_count_match = ITEM_COUNT_PATTERN.match(clean_text)
+    if item_count_match:
+        item_name = normalize_order_item_name(item_count_match.group("name"))
+        item_count = int(item_count_match.group("count"))
+    else:
+        item_name = normalize_order_item_name(clean_text)
+        item_count = DEFAULT_ITEM_COUNT
+
+    if not item_name or item_count <= 0:
+        return "", 0
+    return item_name, item_count
+
+
+def split_order_items_and_counts(item_count_list):
+    """把 `["cola_2", "chips_1"]` 拆成物品名列表和数量列表。"""
+    if not isinstance(item_count_list, list):
+        return False, [], []
+
+    orderlist = []
+    orderlist_num = []
+    for item_text in item_count_list:
+        item_name, item_count = parse_item_count_text(item_text)
+        if not item_name:
+            return False, [], []
+        orderlist.append(item_name)
+        orderlist_num.append(item_count)
+
+    return True, orderlist, orderlist_num
 
 
 def sample_depth_median(depth_frame, center_x, center_y, radius=DEPTH_SAMPLE_RADIUS):
@@ -330,6 +389,7 @@ class AlignAndTakeOrderActionServer:
         result.error_msg = ""
         result.order_text = ""
         result.orderlist = []
+        result.orderlist_num = []
         result.rounds_used = 0
 
         try:
@@ -385,10 +445,19 @@ class AlignAndTakeOrderActionServer:
                     self.server.set_aborted(result, result.error_msg)
                     return
 
+                parse_success, order_items, order_item_counts = split_order_items_and_counts(
+                    list(getattr(llm_result, "items", []))
+                )
+                if not parse_success or not order_items:
+                    result.error_msg = "llm parse failed or network error: invalid item_count list"
+                    self.server.set_aborted(result, result.error_msg)
+                    return
+
                 self.current_pose = self._get_current_pose()
                 result.success = True
                 result.order_text = order_text
-                result.orderlist = list(llm_result.items)
+                result.orderlist = order_items
+                result.orderlist_num = order_item_counts
                 result.rounds_used = round_index + 1
                 result.service_pose_map = self.current_pose
                 self.server.set_succeeded(result)

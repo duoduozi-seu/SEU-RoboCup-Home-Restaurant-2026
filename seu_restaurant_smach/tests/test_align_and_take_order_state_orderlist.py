@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""测试 SMACH 中接单状态对 orderlist 的透传。"""
+"""测试 SMACH 中接单状态对 orderlist 和 orderlist_num 的透传。"""
 
 import importlib.util
 import sys
@@ -160,15 +160,16 @@ def load_module():
 
 
 class AlignAndTakeOrderStateOrderListTest(unittest.TestCase):
-    """验证接单状态会把 orderlist 写入 userdata。"""
+    """验证接单状态会把 orderlist 和 orderlist_num 写入 userdata。"""
 
-    def test_execute_should_copy_orderlist_to_userdata(self):
+    def test_execute_should_copy_order_fields_to_userdata(self):
         module = load_module()
         FakeActionClient.next_result = types.SimpleNamespace(
             success=True,
             service_pose_map=types.SimpleNamespace(name="service_pose"),
             order_text="cola and chips",
             orderlist=["cola", "chips"],
+            orderlist_num=[2, 1],
         )
 
         state = module.AlignAndTakeOrderState()
@@ -176,9 +177,10 @@ class AlignAndTakeOrderStateOrderListTest(unittest.TestCase):
         outcome = state.execute(userdata)
 
         self.assertEqual(outcome, "success")
-        self.assertEqual(state.output_keys, ["service_pose_map", "order_text", "orderlist"])
+        self.assertEqual(state.output_keys, ["service_pose_map", "order_text", "orderlist", "orderlist_num"])
         self.assertEqual(userdata.order_text, "cola and chips")
         self.assertEqual(userdata.orderlist, ["cola", "chips"])
+        self.assertEqual(userdata.orderlist_num, [2, 1])
 
 
 if __name__ == "__main__":

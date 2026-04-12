@@ -33,43 +33,50 @@ ACTION_NAME = "parse_restaurant_order"
 # Gemini 模型与请求重试次数。
 GEMINI_MODEL = "gemini-2.5-flash"
 MAX_RETRY_TIMES = 3
+DEFAULT_ITEM_COUNT = 1
+ITEM_COUNT_PATTERN = re.compile(r"^(?P<name>.+?)_(?P<count>\d+)$")
 
 # 规则 prompt：强约束模型只输出一个 JSON 数组。
 # 这里不再给任何硬编码候选词表，也不写自定义映射关系，只做通用抽取。
 ORDER_PARSE_RULE_PROMPT = """You are an item extraction module for a restaurant service robot.
-Your job is to read one English customer order sentence and extract the requested items.
+Your job is to read one English customer order sentence and extract the requested items with quantities.
 
 Strict rules:
 1. Output only one JSON array of strings.
 2. Do not output explanations, markdown, code fences, or extra words.
-3. Keep the item order exactly the same as the customer mentioned.
-4. If the quantity is clearly more than one, repeat the item in the array.
-5. Keep each item as a short lower-case English item phrase.
-6. Do not invent any special mapping relation. Keep the original item meaning.
-7. If the speech recognition text has small mistakes, infer the most likely intended item phrase.
-8. Remove quantity words and packaging helper words like bottle, bag, cup, can, pack, or piece when they are not the item itself.
-9. If no valid item can be extracted, output [].
+3. Each string must use the format "item_name_count".
+4. If the quantity is not clearly mentioned, use 1.
+5. If the same item appears multiple times, merge it into one entry and sum the quantity.
+6. Keep item entries ordered by the first time the customer mentioned each item.
+7. Keep each item name as a short lower-case English item phrase.
+8. Do not invent any special mapping relation. Keep the original item meaning.
+9. If the speech recognition text has small mistakes, infer the most likely intended item phrase.
+10. Remove quantity words and packaging helper words like bottle, bag, cup, can, pack, or piece when they are not the item itself.
+11. If no valid item can be extracted, output [].
 
-Output only one JSON array, for example: ["cola", "chips", "mineral water"]"""
+Output only one JSON array, for example: ["cola_2", "chips_1", "mineral water_1"]"""
 
 # few-shot prompt：直接给模型示范输入和目标输出风格。
 ORDER_PARSE_FEW_SHOT_PROMPT = """[Few-shot examples]
 Customer: i want a bottle of cola and a bag of chips and a bottle of mineral water
-Output: ["cola", "chips", "mineral water"]
+Output: ["cola_1", "chips_1", "mineral water_1"]
 
 Customer: please give me two bottles of water and one cookie
-Output: ["water", "water", "cookie"]
+Output: ["water_2", "cookie_1"]
 
 Customer: can i have orange juice and a pack of crackers
-Output: ["orange juice", "crackers"]
+Output: ["orange juice_1", "crackers_1"]
 
 Customer: i would like bread, chocolate milk and apple juice
-Output: ["bread", "chocolate milk", "apple juice"]"""
+Output: ["bread_1", "chocolate milk_1", "apple juice_1"]
+
+Customer: i want cola and one more cola and two chips
+Output: ["cola_2", "chips_2"]"""
 
 # 当模型第一次格式不对时，第二次会补一段更硬的提醒。
 RETRY_HINT_PROMPT = """[Retry instruction]
 Your previous answer did not follow the required format.
-Regenerate and output only one JSON array of strings."""
+Regenerate and output only one JSON array of strings in the format "item_name_count"."""
 
 
 def build_order_parse_prompt(order_text, retry_hint_text=""):
@@ -121,6 +128,7 @@ def normalize_single_item_text(item_text):
     # 这里只做最基础的通用清洗：去首尾空格、转小写、合并多空格。
     clean_text = item_text.strip().lower()
     clean_text = clean_text.replace("-", " ")
+    clean_text = clean_text.replace("_", " ")
     clean_text = re.sub(r"\s+", " ", clean_text)
     if not clean_text:
         return ""
@@ -128,19 +136,49 @@ def normalize_single_item_text(item_text):
     return clean_text
 
 
+def parse_item_count_entry(item_text):
+    """把模型输出的单个元素解析成 `(item_name, count)`。"""
+    if not isinstance(item_text, str):
+        return "", 0
+
+    clean_text = item_text.strip().lower()
+    clean_text = clean_text.replace("-", " ")
+    clean_text = re.sub(r"\s*_\s*", "_", clean_text)
+    clean_text = re.sub(r"\s+", " ", clean_text)
+    if not clean_text:
+        return "", 0
+
+    item_count_match = ITEM_COUNT_PATTERN.match(clean_text)
+    if item_count_match:
+        item_name = normalize_single_item_text(item_count_match.group("name"))
+        item_count = int(item_count_match.group("count"))
+    else:
+        item_name = normalize_single_item_text(clean_text)
+        item_count = DEFAULT_ITEM_COUNT
+
+    if not item_name or item_count <= 0:
+        return "", 0
+    return item_name, item_count
+
+
 def normalize_model_output_items(item_list):
-    """清洗模型返回的列表，只保留有效字符串。"""
+    """清洗模型返回的列表，并合并成稳定的 `item_count` 结果。"""
     if not isinstance(item_list, list):
         return []
 
-    normalized_items = []
+    ordered_item_names = []
+    item_count_map = {}
+
     for item in item_list:
-        # 每个元素都单独做最基础的文本清洗。
-        normalized_item = normalize_single_item_text(item)
-        if not normalized_item:
+        item_name, item_count = parse_item_count_entry(item)
+        if not item_name:
             continue
-        normalized_items.append(normalized_item)
-    return normalized_items
+        if item_name not in item_count_map:
+            ordered_item_names.append(item_name)
+            item_count_map[item_name] = 0
+        item_count_map[item_name] += item_count
+
+    return ["{}_{}".format(item_name, item_count_map[item_name]) for item_name in ordered_item_names]
 
 
 def parse_item_list_from_model_text(model_text):
