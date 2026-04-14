@@ -16,8 +16,8 @@
 5. 每服务完一人后，回到吧台初始坐标与背对吧台的初始朝向。
 """
 
-import os
 import sys
+from pathlib import Path
 
 import actionlib
 import rospy
@@ -38,9 +38,12 @@ from seu_voice.srv import seu_voice as VoiceSrv
 from seu_voice.srv import seu_voiceRequest
 
 # --- 环境补丁 ---
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-if SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, SCRIPT_DIR)
+THIS_FILE = Path(__file__).resolve()
+SCRIPT_DIR = str(THIS_FILE.parent)
+WORKSPACE_SRC_DIR = str(THIS_FILE.parents[4])
+for search_path in (SCRIPT_DIR, WORKSPACE_SRC_DIR):
+    if search_path not in sys.path:
+        sys.path.insert(0, search_path)
 
 from restaurant_states import build_customer_nav_pose, reverse_pose_orientation
 
@@ -66,6 +69,14 @@ ASK_ORDER_TEXT = "Hello. What would you like to order?"
 ORDER_REPEAT_PREFIX = "The customer ordered "
 ORDER_REPEAT_SUFFIX = ", please give me them."
 FINAL_DELIVER_TEXT = "I am back. Please take your order. Enjoy your meal."
+GRASP_CATEGORY = "bottle"
+GRASP_PROFILE_BUNDLE_PATH = ""
+GRASP_CONDA_EXE = "conda"
+GRASP_DETECT_ENV_NAME = "/home/duo/anaconda3/envs/groundedsam/bin/python"
+GRASP_ENV_NAME = "/home/duo/anaconda3/envs/GraspGen/bin/python"
+GRASP_CAMERA_SERIAL_NO = ""
+GRASP_CAMERA_VISUAL_PRESET = 5
+GRASP_CAMERA_WARMUP_FRAMES = 30
 
 # 把 0-9 的数字直接映射成英文单词，方便英文语音模型更稳定地读出来。
 COUNT_WORD_MAP = {
@@ -83,6 +94,67 @@ COUNT_WORD_MAP = {
 
 _TF_BUFFER = None
 _TF_LISTENER = None
+_GRASP_RUNTIME = None
+_GRASP_BOOT_RUNTIME = None
+_GRASP_SHUTDOWN_RUNTIME = None
+_GRASP_BY_CATEGORY = None
+
+DEBUG = True
+
+def load_grasp_api():
+    """按需加载抓取模块，避免状态机启动时就绑定整套抓取依赖。"""
+    global _GRASP_BOOT_RUNTIME, _GRASP_SHUTDOWN_RUNTIME, _GRASP_BY_CATEGORY
+    if (
+        _GRASP_BOOT_RUNTIME is not None
+        and _GRASP_SHUTDOWN_RUNTIME is not None
+        and _GRASP_BY_CATEGORY is not None
+    ):
+        return
+
+    try:
+        from ppc_grasp.scripts.grasp_action import (
+            boot_runtime as grasp_boot_runtime,
+            grasp_by_category as grasp_by_category_fn,
+            shutdown_runtime as grasp_shutdown_runtime,
+        )
+    except Exception as exc:
+        raise RuntimeError("failed to import ppc_grasp grasp_action: {}".format(str(exc))) from exc
+
+    _GRASP_BOOT_RUNTIME = grasp_boot_runtime
+    _GRASP_SHUTDOWN_RUNTIME = grasp_shutdown_runtime
+    _GRASP_BY_CATEGORY = grasp_by_category_fn
+
+
+def get_grasp_runtime():
+    """懒加载并复用抓取 runtime，避免每次抓取都重新启动。"""
+    global _GRASP_RUNTIME
+    if _GRASP_RUNTIME is not None:
+        return _GRASP_RUNTIME
+
+    load_grasp_api()
+    _GRASP_RUNTIME = _GRASP_BOOT_RUNTIME(
+        profile_bundle_path=GRASP_PROFILE_BUNDLE_PATH,
+        conda_exe=GRASP_CONDA_EXE,
+        detect_env_name=GRASP_DETECT_ENV_NAME,
+        grasp_env_name=GRASP_ENV_NAME,
+        camera_serial_no=GRASP_CAMERA_SERIAL_NO,
+        camera_visual_preset=GRASP_CAMERA_VISUAL_PRESET,
+        camera_warmup_frames=GRASP_CAMERA_WARMUP_FRAMES,
+    )
+    return _GRASP_RUNTIME
+
+
+def shutdown_grasp_runtime():
+    """统一释放抓取 runtime。"""
+    global _GRASP_RUNTIME
+    if _GRASP_RUNTIME is None:
+        return
+
+    try:
+        if _GRASP_SHUTDOWN_RUNTIME is not None:
+            _GRASP_SHUTDOWN_RUNTIME(_GRASP_RUNTIME)
+    finally:
+        _GRASP_RUNTIME = None
 
 
 def build_nav_goal_from_pose(pose: PoseStamped) -> RestaurantNavGoal:
@@ -210,10 +282,11 @@ class FindWavingCustomersState(smach.State):
             if not person_points:
                 continue
 
-            userdata.detected_customer_points = person_points[:MAX_CUSTOMERS_PER_SCAN]
+            detected_customer_points = person_points[:MAX_CUSTOMERS_PER_SCAN]
+            userdata.detected_customer_points = detected_customer_points
             rospy.loginfo(
                 "Found %d waving customer(s) in current scan.",
-                len(userdata.detected_customer_points),
+                len(detected_customer_points),
             )
             return "success"
 
@@ -240,8 +313,9 @@ class LoadCustomerQueueState(smach.State):
         if remaining_count <= 0 or not detected_customer_points:
             return "failure"
 
-        userdata.pending_customer_points = detected_customer_points[:remaining_count]
-        return "success" if userdata.pending_customer_points else "failure"
+        pending_customer_points = detected_customer_points[:remaining_count]
+        userdata.pending_customer_points = pending_customer_points
+        return "success" if pending_customer_points else "failure"
 
 
 class SelectNextCustomerState(smach.State):
@@ -402,15 +476,71 @@ class SpeakOrderAtBarState(smach.State):
             return "failure"
 
 
-class SkipGraspState(smach.State):
-    """机械臂抓取占位态。"""
+class GraspFirstOrderedItemState(smach.State):
+    """只抓取订单列表中的第一个物品，并固定走 bottle 模式。"""
 
     def __init__(self):
-        smach.State.__init__(self, outcomes=["success"])
+        smach.State.__init__(
+            self,
+            outcomes=["success", "failure"],
+            input_keys=["orderlist", "orderlist_num"],
+        )
 
     def execute(self, userdata):
-        rospy.loginfo("Skipped mechanical arm grasp phase.")
-        return "success"
+        if DEBUG is True:
+            return "success"
+        orderlist = list(getattr(userdata, "orderlist", []) or [])
+        orderlist_num = list(getattr(userdata, "orderlist_num", []) or [])
+
+        if not orderlist:
+            rospy.logwarn("Grasp skipped: orderlist is empty.")
+            return "failure"
+
+        target_item_name = str(orderlist[0]).strip()
+        target_item_count = orderlist_num[0] if orderlist_num else 1
+        if not target_item_name:
+            rospy.logwarn("Grasp skipped: first ordered item is empty.")
+            return "failure"
+
+        rospy.loginfo(
+            "Grasp first ordered item once | category=%s item=%s requested_count=%s",
+            GRASP_CATEGORY,
+            target_item_name,
+            str(target_item_count),
+        )
+
+        try:
+            runtime = get_grasp_runtime()
+            grasp_result = _GRASP_BY_CATEGORY(
+                runtime,
+                GRASP_CATEGORY,
+                bottle_prompt=target_item_name,
+            )
+        except Exception as exc:
+            rospy.logerr(
+                "Grasp phase exception | category=%s item=%s error=%s",
+                GRASP_CATEGORY,
+                target_item_name,
+                str(exc),
+            )
+            return "failure"
+
+        if grasp_result.success:
+            rospy.loginfo(
+                "Grasp succeeded | item=%s status=%s candidate_index=%s",
+                target_item_name,
+                grasp_result.status,
+                str(grasp_result.candidate_index),
+            )
+            return "success"
+
+        rospy.logwarn(
+            "Grasp failed | item=%s status=%s message=%s",
+            target_item_name,
+            grasp_result.status,
+            grasp_result.message,
+        )
+        return "failure"
 
 
 class FinalDeliverSpeakState(smach.State):
@@ -496,12 +626,15 @@ def build_service_one_customer_state_machine():
         smach.StateMachine.add(
             "SPEAK_ORDER_AT_BAR",
             SpeakOrderAtBarState(),
-            transitions={"success": "SKIP_GRASP_PLACEHOLDER", "failure": "failure"},
+            transitions={"success": "GRASP_FIRST_ORDERED_ITEM", "failure": "failure"},
         )
         smach.StateMachine.add(
-            "SKIP_GRASP_PLACEHOLDER",
-            SkipGraspState(),
-            transitions={"success": "NAV_BACK_TO_CUSTOMER"},
+            "GRASP_FIRST_ORDERED_ITEM",
+            GraspFirstOrderedItemState(),
+            transitions={
+                "success": "NAV_BACK_TO_CUSTOMER",
+                "failure": "NAV_BACK_TO_CUSTOMER",
+            },
         )
         smach.StateMachine.add(
             "NAV_BACK_TO_CUSTOMER",
@@ -585,9 +718,14 @@ def main():
     introspection_server = smach_ros.IntrospectionServer("restaurant_smach_view", sm, "/RESTAURANT_SM")
     introspection_server.start()
 
-    outcome = sm.execute()
-    rospy.loginfo("restaurant smach finished with final outcome: %s", outcome)
-    introspection_server.stop()
+    try:
+        outcome = sm.execute()
+        rospy.loginfo("restaurant smach finished with final outcome: %s", outcome)
+    finally:
+        try:
+            shutdown_grasp_runtime()
+        finally:
+            introspection_server.stop()
 
 
 if __name__ == "__main__":
