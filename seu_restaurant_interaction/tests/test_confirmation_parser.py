@@ -2,15 +2,15 @@
 # -*- coding: utf-8 -*-
 """测试 yes/no 确认语句解析逻辑。"""
 
-import os
 import sys
 import unittest
+from pathlib import Path
 
 
-WORKSPACE_SRC = "/home/duo/GPSR_ws_zyd/catkin_robocup_2/src/GPSR_code/src"
-SCRIPT_DIR = os.path.join(WORKSPACE_SRC, "seu_restaurant_interaction", "scripts")
-if SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, SCRIPT_DIR)
+SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
+SCRIPT_DIR_STR = str(SCRIPT_DIR)
+if SCRIPT_DIR_STR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR_STR)
 
 from person_align_core import classify_confirmation_text, select_nearest_person_within_range
 

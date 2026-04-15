@@ -142,7 +142,7 @@ class SimpleSpeechRecognizer:
                  model_name: str = "base",
                  language: str = "en"):
         # 自动选择设备：优先 GPU
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = "cpu" if torch.cuda.is_available() else "cpu"
         self.language = language
         self.model_name = model_name
 
@@ -159,7 +159,7 @@ class SimpleSpeechRecognizer:
 
     def record_audio(self,
                      output_audio_path: str = AUDIO_OUTPUT_PATH,
-                     max_duration: int = 10,
+                     max_duration: int = 5,
                      silence_timeout: int = 3) -> str:
         """从麦克风录音并保存为 wav 文件"""
         print("开始录音...")

@@ -55,9 +55,11 @@ class FakeStateMachine:
 
 class FakeActionClient:
     next_result = None
+    instances = []
 
     def __init__(self, *args, **kwargs):
         self.goal = None
+        FakeActionClient.instances.append(self)
 
     def wait_for_server(self, duration):
         del duration
@@ -84,6 +86,7 @@ def _make_module(name, **attrs):
 
 
 def load_module():
+    FakeActionClient.instances = []
     fake_rospy = _make_module(
         "rospy",
         wait_for_service=lambda *args, **kwargs: None,
@@ -181,6 +184,8 @@ class AlignAndTakeOrderStateOrderListTest(unittest.TestCase):
         self.assertEqual(userdata.order_text, "cola and chips")
         self.assertEqual(userdata.orderlist, ["cola", "chips"])
         self.assertEqual(userdata.orderlist_num, [2, 1])
+        self.assertEqual(len(FakeActionClient.instances), 1)
+        self.assertEqual(FakeActionClient.instances[0].goal.dialog_timeout_sec, 5.0)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,9 @@
     <!-- 餐厅题导航 action 包装层：对上游提供 NAME / POSE 双模式导航 -->
     <node pkg="seu_nav" type="nav_action_server.py" name="restaurant_nav_action_server" output="screen"/>
 
+    <!-- Piper MoveIt：等价于 roslaunch piper_with_gripper_moveit demo.launch -->
+    <include file="$(find piper_with_gripper_moveit)/launch/demo.launch"/>
+
     <!-- 原地旋转并寻找最近挥手顾客 -->
     <node pkg="seu_restaurant_wave" type="find_waving_customer_action_server.py" name="find_waving_customer_action_server" output="screen"/>
 

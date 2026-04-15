@@ -17,11 +17,9 @@
 """
 
 import sys
-import time
 from pathlib import Path
 
 import actionlib
-import numpy as np
 import rospy
 import smach
 import smach_ros
@@ -54,6 +52,9 @@ WAVE_ACTION_NAME = "find_waving_customer"
 NAV_ACTION_NAME = "restaurant_nav"
 INTERACTION_ACTION_NAME = "align_and_take_order"
 VOICE_SERVICE_NAME = "voice_service"
+PIPER_GRIPPER_SERVICE_NAME = "gripper_srv"
+PIPER_GO_ZERO_SERVICE_NAME = "go_zero_srv"
+PIPER_BLOCK_ARM_SERVICE_NAME = "block_arm"
 
 MAP_FRAME = "map"
 ROBOT_BASE_FRAME = "base_link"
@@ -65,7 +66,7 @@ WAVE_ANGULAR_SPEED_RAD_S = 0.25
 NAV_TIMEOUT_SEC = 120.0
 STAND_OFF_DISTANCE_M = 1.0
 ALIGN_TIMEOUT_SEC = 20.0
-DIALOG_TIMEOUT_SEC = 20.0
+DIALOG_TIMEOUT_SEC = 5.0
 ORDER_MAX_ROUNDS = 2
 ASK_ORDER_TEXT = "Hello. What would you like to order?"
 ORDER_REPEAT_PREFIX = "The customer ordered "
@@ -100,61 +101,39 @@ _TF_LISTENER = None
 _GRASP_RUNTIME = None
 _GRASP_BOOT_RUNTIME = None
 _GRASP_SHUTDOWN_RUNTIME = None
-_GRASP_BY_CATEGORY = None
-_GRASP_BUILD_RESULT = None
-_GRASP_CAPTURE_RGBD = None
-_GRASP_EXTRACT_CANDIDATES = None
-_GRASP_GET_EE_TO_BASE_TRANSFORM = None
-_GRASP_PLAN_REACHABLE = None
-_GRASP_ROTATION_MATRIX_FROM_QUATERNION_XYZW = None
+_GRASP_BOTTLE = None
+_GRASP_BOTTLE_CLOSED_SET = None
 
-DEBUG = True
+DEBUG = False
 
 def load_grasp_api():
     """按需加载抓取模块，避免状态机启动时就绑定整套抓取依赖。"""
-    global _GRASP_BOOT_RUNTIME, _GRASP_SHUTDOWN_RUNTIME, _GRASP_BY_CATEGORY
-    global _GRASP_BUILD_RESULT, _GRASP_CAPTURE_RGBD, _GRASP_EXTRACT_CANDIDATES
-    global _GRASP_GET_EE_TO_BASE_TRANSFORM, _GRASP_PLAN_REACHABLE
-    global _GRASP_ROTATION_MATRIX_FROM_QUATERNION_XYZW
+    global _GRASP_BOOT_RUNTIME, _GRASP_SHUTDOWN_RUNTIME
+    global _GRASP_BOTTLE, _GRASP_BOTTLE_CLOSED_SET
     if (
         _GRASP_BOOT_RUNTIME is not None
         and _GRASP_SHUTDOWN_RUNTIME is not None
-        and _GRASP_BY_CATEGORY is not None
-        and _GRASP_BUILD_RESULT is not None
-        and _GRASP_CAPTURE_RGBD is not None
-        and _GRASP_EXTRACT_CANDIDATES is not None
-        and _GRASP_GET_EE_TO_BASE_TRANSFORM is not None
-        and _GRASP_PLAN_REACHABLE is not None
-        and _GRASP_ROTATION_MATRIX_FROM_QUATERNION_XYZW is not None
+        and _GRASP_BOTTLE is not None
+        and _GRASP_BOTTLE_CLOSED_SET is not None
     ):
         return
 
     try:
         from ppc_grasp.scripts.grasp_action import (
             boot_runtime as grasp_boot_runtime,
-            grasp_by_category as grasp_by_category_fn,
             shutdown_runtime as grasp_shutdown_runtime,
         )
-        from ppc_grasp.scripts.grasp_action.common import (
-            build_result as grasp_build_result,
-            capture_rgbd as grasp_capture_rgbd,
-            extract_candidates as grasp_extract_candidates,
-            get_ee_to_base_transform as grasp_get_ee_to_base_transform,
-            plan_reachable as grasp_plan_reachable,
-            rotation_matrix_from_quaternion_xyzw as grasp_rotation_matrix_from_quaternion_xyzw,
+        from ppc_grasp.scripts.grasp_action.executor import (
+            grasp_bottle as grasp_bottle_fn,
+            grasp_bottle_closed_set as grasp_bottle_closed_set_fn,
         )
     except Exception as exc:
         raise RuntimeError("failed to import ppc_grasp grasp_action: {}".format(str(exc))) from exc
 
     _GRASP_BOOT_RUNTIME = grasp_boot_runtime
     _GRASP_SHUTDOWN_RUNTIME = grasp_shutdown_runtime
-    _GRASP_BY_CATEGORY = grasp_by_category_fn
-    _GRASP_BUILD_RESULT = grasp_build_result
-    _GRASP_CAPTURE_RGBD = grasp_capture_rgbd
-    _GRASP_EXTRACT_CANDIDATES = grasp_extract_candidates
-    _GRASP_GET_EE_TO_BASE_TRANSFORM = grasp_get_ee_to_base_transform
-    _GRASP_PLAN_REACHABLE = grasp_plan_reachable
-    _GRASP_ROTATION_MATRIX_FROM_QUATERNION_XYZW = grasp_rotation_matrix_from_quaternion_xyzw
+    _GRASP_BOTTLE = grasp_bottle_fn
+    _GRASP_BOTTLE_CLOSED_SET = grasp_bottle_closed_set_fn
 
 
 def get_grasp_runtime():
@@ -204,202 +183,6 @@ def build_closed_set_item_name_set():
     return normalized_names
 
 
-def _run_closed_set_bottle_grasp(
-    runtime,
-    *,
-    category,
-    closed_set_gdino_prompt,
-    target_prompt,
-):
-    """执行 restaurant 中的闭集瓶类识别 + graspgen 抓取流程。"""
-    load_grasp_api()
-    controller = runtime.controller
-    target_prompt = normalize_item_name_for_closed_set(target_prompt)
-    if not target_prompt:
-        return _GRASP_BUILD_RESULT(
-            category=category,
-            success=False,
-            status="aborted",
-            message="closed_set target_prompt is empty",
-        )
-
-    rospy.loginfo(
-        "[RESTAURANT_GRASP][CLOSED_SET] start | category=%s gdino_prompt=%s target_prompt=%s",
-        category,
-        closed_set_gdino_prompt,
-        target_prompt,
-    )
-
-    controller.move_to_named_pose("bottle_detect")
-    time.sleep(0.2)
-
-    try:
-        ee_to_base_transform = _GRASP_GET_EE_TO_BASE_TRANSFORM(controller)
-        color_image, depth_image, intrinsics = _GRASP_CAPTURE_RGBD(runtime)
-        detect_result = runtime.runner.run(
-            category=category,
-            input_source="rgbd_arrays",
-            color_image=color_image,
-            depth_image=depth_image,
-            intrinsics=intrinsics,
-            profile_override={
-                "text_prompt": closed_set_gdino_prompt,
-                "recognition_mode": "closed_set",
-                "closed_set_target_prompt": target_prompt,
-            },
-            grasp_mode="graspgen",
-            ee_to_base_transform=ee_to_base_transform,
-        )
-    except Exception as exc:
-        return _GRASP_BUILD_RESULT(
-            category=category,
-            success=False,
-            status="aborted",
-            message=str(exc),
-            extra={
-                "item_prompt": target_prompt,
-                "recognition_mode": "closed_set",
-                "closed_set_gdino_prompt": closed_set_gdino_prompt,
-            },
-        )
-
-    if detect_result.get("status", "ok") != "ok":
-        return _GRASP_BUILD_RESULT(
-            category=category,
-            success=False,
-            status="failed",
-            message=str(detect_result.get("message", "")),
-            detect_result=detect_result,
-            extra={
-                "item_prompt": target_prompt,
-                "recognition_mode": "closed_set",
-                "closed_set_gdino_prompt": closed_set_gdino_prompt,
-            },
-        )
-
-    poses, confs = _GRASP_EXTRACT_CANDIDATES(detect_result)
-    if not poses:
-        return _GRASP_BUILD_RESULT(
-            category=category,
-            success=False,
-            status="failed",
-            message="no grasp candidates found",
-            detect_result=detect_result,
-            extra={
-                "item_prompt": target_prompt,
-                "recognition_mode": "closed_set",
-                "closed_set_gdino_prompt": closed_set_gdino_prompt,
-            },
-        )
-
-    for idx, pose in enumerate(poses[:5], start=1):
-        conf = confs[idx - 1] if idx - 1 < len(confs) else None
-        conf_str = "None" if conf is None else "{:.4f}".format(float(conf))
-        rospy.loginfo(
-            "[RESTAURANT_GRASP][CLOSED_SET] try candidate #%d conf=%s",
-            idx,
-            conf_str,
-        )
-        try:
-            target_xyz, target_quat = controller.calculate_grasp_pose_from_matrix(
-                pose,
-                offset_mode="cup",
-            )
-        except Exception as exc:
-            rospy.logwarn(
-                "[RESTAURANT_GRASP][CLOSED_SET] candidate #%d pose conversion failed: %s",
-                idx,
-                str(exc),
-            )
-            continue
-
-        if target_xyz is None or target_quat is None:
-            rospy.logwarn("[RESTAURANT_GRASP][CLOSED_SET] candidate #%d invalid target pose", idx)
-            continue
-
-        target_xyz_np = np.asarray(target_xyz, dtype=np.float64).reshape(-1)
-        target_quat_np = np.asarray(target_quat, dtype=np.float64).reshape(-1)
-        if target_xyz_np.shape[0] != 3 or target_quat_np.shape[0] != 4:
-            rospy.logwarn("[RESTAURANT_GRASP][CLOSED_SET] candidate #%d invalid target shape", idx)
-            continue
-
-        quat_norm = float(np.linalg.norm(target_quat_np))
-        if quat_norm < 1e-8:
-            rospy.logwarn("[RESTAURANT_GRASP][CLOSED_SET] candidate #%d invalid quaternion norm", idx)
-            continue
-        target_quat_np = target_quat_np / quat_norm
-
-        local_z_axis = _GRASP_ROTATION_MATRIX_FROM_QUATERNION_XYZW(target_quat_np)[:, 2]
-        pregrasp_xyz = target_xyz_np - 0.07 * local_z_axis
-        pregrasp_reached = False
-
-        if not _GRASP_PLAN_REACHABLE(controller, pregrasp_xyz, target_quat_np):
-            rospy.logwarn(
-                "[RESTAURANT_GRASP][CLOSED_SET] candidate #%d pregrasp plan failed",
-                idx,
-            )
-        elif not controller.move_to_pose(pregrasp_xyz, target_quat_np):
-            rospy.logwarn(
-                "[RESTAURANT_GRASP][CLOSED_SET] candidate #%d pregrasp execution failed",
-                idx,
-            )
-        else:
-            pregrasp_reached = True
-
-        if not _GRASP_PLAN_REACHABLE(controller, target_xyz_np, target_quat_np):
-            rospy.logwarn("[RESTAURANT_GRASP][CLOSED_SET] candidate #%d target plan failed", idx)
-            continue
-
-        grasp_result = controller.execute_grasp_and_return(
-            target_xyz_np,
-            target_quat_np,
-            start_width=0.095,
-            return_pose="bottle_detect",
-            linear_approach=pregrasp_reached,
-            return_actual_pose=True,
-        )
-        if isinstance(grasp_result, tuple):
-            ok, actual_grasp_xyz, actual_grasp_quat = grasp_result
-        else:
-            ok = bool(grasp_result)
-            actual_grasp_xyz = None
-            actual_grasp_quat = None
-
-        if ok:
-            final_xyz = actual_grasp_xyz if actual_grasp_xyz is not None else target_xyz_np.tolist()
-            final_quat = actual_grasp_quat if actual_grasp_quat is not None else target_quat_np.tolist()
-            return _GRASP_BUILD_RESULT(
-                category=category,
-                success=True,
-                status="success",
-                candidate_index=idx - 1,
-                candidate_confidence=None if conf is None else float(conf),
-                final_xyz=final_xyz,
-                final_quat=final_quat,
-                detect_result=detect_result,
-                extra={
-                    "item_prompt": target_prompt,
-                    "recognition_mode": "closed_set",
-                    "closed_set_gdino_prompt": closed_set_gdino_prompt,
-                },
-            )
-
-        rospy.logwarn("[RESTAURANT_GRASP][CLOSED_SET] candidate #%d execution failed", idx)
-
-    return _GRASP_BUILD_RESULT(
-        category=category,
-        success=False,
-        status="failed",
-        message="all candidates failed",
-        detect_result=detect_result,
-        extra={
-            "item_prompt": target_prompt,
-            "recognition_mode": "closed_set",
-            "closed_set_gdino_prompt": closed_set_gdino_prompt,
-        },
-    )
-
-
 def build_nav_goal_from_pose(pose: PoseStamped) -> RestaurantNavGoal:
     """把位姿封装成导航 Goal。"""
     goal = RestaurantNavGoal()
@@ -416,6 +199,65 @@ def say_once(text: str):
     response = client.call(seu_voiceRequest(text=text))
     if not response.state:
         raise RuntimeError("voice service failed: {}".format(response.errormsg))
+
+
+def release_gripper_once(width: float = 0.07, effort: float = 1.0):
+    """通过 piper_ctrl_single_node 的服务松开夹爪，绕过 MoveIt fake trajectory。"""
+    from piper_msgs.srv import Gripper, GripperRequest
+
+    rospy.loginfo(
+        "[DELIVER] release gripper via %s | width=%.3f effort=%.2f",
+        PIPER_GRIPPER_SERVICE_NAME,
+        float(width),
+        float(effort),
+    )
+    request = GripperRequest()
+    request.gripper_angle = float(width)
+    request.gripper_effort = float(effort)
+    request.gripper_code = 0x01
+    request.set_zero = 0
+
+    rospy.wait_for_service(PIPER_GRIPPER_SERVICE_NAME, timeout=2.0)
+    response = rospy.ServiceProxy(PIPER_GRIPPER_SERVICE_NAME, Gripper).call(request)
+    if not response.status:
+        raise RuntimeError("piper gripper release failed: code={}".format(response.code))
+    rospy.loginfo("[DELIVER] gripper release accepted | code=%s", str(response.code))
+
+
+def set_piper_joint_stream_blocked(blocked: bool):
+    """暂停/恢复 piper_ctrl_single_node 从 /joint_states 转发控制，避免覆盖服务命令。"""
+    from std_srvs.srv import SetBool, SetBoolRequest
+
+    rospy.loginfo(
+        "[DELIVER] set %s blocked=%s",
+        PIPER_BLOCK_ARM_SERVICE_NAME,
+        str(bool(blocked)),
+    )
+    request = SetBoolRequest()
+    request.data = bool(blocked)
+    rospy.wait_for_service(PIPER_BLOCK_ARM_SERVICE_NAME, timeout=2.0)
+    response = rospy.ServiceProxy(PIPER_BLOCK_ARM_SERVICE_NAME, SetBool).call(request)
+    if not response.success and bool(blocked):
+        raise RuntimeError("piper block_arm failed: {}".format(response.message))
+
+
+def move_arm_go_zero_once(is_mit_mode: bool = False):
+    """通过 piper_ctrl_single_node 的 go_zero 服务回到机械臂零位。"""
+    from piper_msgs.srv import GoZero, GoZeroRequest
+
+    rospy.loginfo(
+        "[DELIVER] move arm go-zero via %s | mit_mode=%s",
+        PIPER_GO_ZERO_SERVICE_NAME,
+        str(bool(is_mit_mode)),
+    )
+    request = GoZeroRequest()
+    request.is_mit_mode = bool(is_mit_mode)
+
+    rospy.wait_for_service(PIPER_GO_ZERO_SERVICE_NAME, timeout=2.0)
+    response = rospy.ServiceProxy(PIPER_GO_ZERO_SERVICE_NAME, GoZero).call(request)
+    if not response.status:
+        raise RuntimeError("piper go zero failed: code={}".format(response.code))
+    rospy.loginfo("[DELIVER] arm go-zero accepted | code=%s", str(response.code))
 
 
 def convert_count_to_spoken_word(item_count):
@@ -732,7 +574,7 @@ class GraspFirstOrderedItemState(smach.State):
     def execute(self, userdata):
         if DEBUG is True:
             return "success"
-        CATEGORY = "bottle"
+        CATEGORY = GRASP_CATEGORY
         CLOSED_SET_GDINO_PROMPT = "bottle.lays."
 
         orderlist = list(getattr(userdata, "orderlist", []) or [])
@@ -751,31 +593,31 @@ class GraspFirstOrderedItemState(smach.State):
 
         closed_set_item_names = build_closed_set_item_name_set()
         use_closed_set = target_item_name in closed_set_item_names
-        grasp_route = "closed_set" if use_closed_set else "grasp_by_category"
+        grasp_route = "closed_set" if use_closed_set else "grasp_bottle"
+        bottle_prompt = CLOSED_SET_GDINO_PROMPT if use_closed_set else target_item_name
 
         rospy.loginfo(
-            "Grasp first ordered item once | route=%s category=%s item=%s normalized_item=%s requested_count=%s",
+            "Grasp first ordered item once | route=%s category=%s item=%s normalized_item=%s requested_count=%s gdino_prompt=%s",
             grasp_route,
             CATEGORY,
             raw_target_item_name,
             target_item_name,
             str(target_item_count),
+            bottle_prompt,
         )
 
         try:
             runtime = get_grasp_runtime()
             if use_closed_set:
-                grasp_result = _run_closed_set_bottle_grasp(
+                grasp_result = _GRASP_BOTTLE_CLOSED_SET(
                     runtime,
-                    category=CATEGORY,
-                    closed_set_gdino_prompt=CLOSED_SET_GDINO_PROMPT,
                     target_prompt=target_item_name,
+                    gdino_prompt=CLOSED_SET_GDINO_PROMPT,
                 )
             else:
-                grasp_result = _GRASP_BY_CATEGORY(
+                grasp_result = _GRASP_BOTTLE(
                     runtime,
-                    CATEGORY,
-                    bottle_prompt=target_item_name,
+                    prompt=bottle_prompt,
                 )
         except Exception as exc:
             rospy.logerr(
@@ -816,8 +658,17 @@ class FinalDeliverSpeakState(smach.State):
     def execute(self, userdata):
         try:
             say_once(FINAL_DELIVER_TEXT)
+            set_piper_joint_stream_blocked(True)
+            try:
+                release_gripper_once()
+                rospy.sleep(1.0)
+                move_arm_go_zero_once()
+                rospy.sleep(4.0)
+            finally:
+                set_piper_joint_stream_blocked(False)
             return "success"
-        except Exception:
+        except Exception as exc:
+            rospy.logerr("Final deliver release/go-zero failed: %s", str(exc))
             return "failure"
 
 

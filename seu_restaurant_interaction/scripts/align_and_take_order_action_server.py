@@ -338,7 +338,7 @@ class AlignAndTakeOrderActionServer:
         return (response.word or "").strip().lower()
 
     def _align_to_customer(self, timeout_sec):
-        """只做简单的旋转对正和前后微调。"""
+        """只做水平旋转对正，不再做前后距离微调。"""
         detector = LocalNearestPersonDetector()
         try:
             rate = rospy.Rate(10)
@@ -362,8 +362,7 @@ class AlignAndTakeOrderActionServer:
                     continue
 
                 center_error = candidate["center_x"] - (FRAME_WIDTH // 2)
-                depth_error = candidate["depth_m"] - TARGET_SERVICE_DISTANCE_M
-                aligned = abs(center_error) <= CENTER_TOLERANCE_PX and abs(depth_error) <= DISTANCE_TOLERANCE_M
+                aligned = abs(center_error) <= CENTER_TOLERANCE_PX
                 if aligned:
                     self._stop_robot()
                     return True
@@ -371,10 +370,6 @@ class AlignAndTakeOrderActionServer:
                 twist = Twist()
                 if abs(center_error) > CENTER_TOLERANCE_PX:
                     twist.angular.z = -ANGULAR_SPEED if center_error > 0 else ANGULAR_SPEED
-                elif depth_error > DISTANCE_TOLERANCE_M:
-                    twist.linear.x = LINEAR_SPEED
-                elif depth_error < -DISTANCE_TOLERANCE_M:
-                    twist.linear.x = -LINEAR_SPEED
                 self.cmd_vel_pub.publish(twist)
                 rate.sleep()
             return False

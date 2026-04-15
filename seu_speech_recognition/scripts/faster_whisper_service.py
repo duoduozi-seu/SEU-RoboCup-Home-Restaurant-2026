@@ -77,7 +77,7 @@ class FasterWhisperRecognizer:
             compute_type=self.compute_type,
         )
 
-    def record_audio(self, output_audio_path=AUDIO_OUTPUT_PATH, max_duration=10):
+    def record_audio(self, output_audio_path=AUDIO_OUTPUT_PATH, max_duration=5):
         with ignore_stderr():
             p = pyaudio.PyAudio()
 

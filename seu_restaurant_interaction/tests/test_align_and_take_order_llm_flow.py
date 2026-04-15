@@ -91,6 +91,14 @@ class FakeActionServer:
         self.preempted_result = result
 
 
+class FakeTimePoint:
+    def __init__(self, seconds):
+        self.seconds = float(seconds)
+
+    def __sub__(self, other):
+        return types.SimpleNamespace(to_sec=lambda: self.seconds - other.seconds)
+
+
 def _make_module(name, **attrs):
     module = types.ModuleType(name)
     for key, value in attrs.items():
@@ -207,6 +215,35 @@ class AlignAndTakeOrderLlmFlowTest(unittest.TestCase):
         output_iter = iter(listen_outputs)
         server._listen_once = lambda: next(output_iter)
         return server
+
+    def test_align_to_customer_should_ignore_distance_and_keep_rotation_only(self):
+        """中心已经对齐时，即使距离不在目标值，也应直接对齐成功。"""
+        module = self.module
+        publish_log = []
+
+        class FakeDetector:
+            def process_once(self):
+                return {
+                    "center_x": module.FRAME_WIDTH // 2,
+                    "depth_m": module.TARGET_SERVICE_DISTANCE_M + 1.0,
+                }
+
+            def close(self):
+                pass
+
+        time_values = iter([0.0, 0.0, 100.0])
+        module.rospy.Time = types.SimpleNamespace(now=lambda: FakeTimePoint(next(time_values)))
+
+        server = object.__new__(module.AlignAndTakeOrderActionServer)
+        server.server = FakeActionServer()
+        server.cmd_vel_pub = types.SimpleNamespace(publish=lambda msg: publish_log.append(msg))
+
+        with patch.object(module, "LocalNearestPersonDetector", return_value=FakeDetector()):
+            outcome = server._align_to_customer(timeout_sec=1.0)
+
+        self.assertTrue(outcome)
+        self.assertTrue(publish_log)
+        self.assertTrue(all(getattr(msg.linear, "x", 0.0) == 0.0 for msg in publish_log))
 
     def test_execute_cb_should_retry_whole_order_when_llm_returns_no_info(self):
         """LLM 返回 no_info 时，应重新回到让主人说指令的流程。"""
