@@ -199,6 +199,62 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
             "The customer ordered three cola, one chips, please give me them."
         )
 
+    def test_grasp_first_ordered_item_should_use_closed_set_for_matching_item(self):
+        module = load_module()
+        module.DEBUG = False
+        module.CLOSED_SET_ITEM_NAME_LIST = ["cola", "lays"]
+        runtime = types.SimpleNamespace(name="runtime")
+        grasp_result = types.SimpleNamespace(
+            success=True,
+            status="success",
+            candidate_index=0,
+            message="",
+        )
+        userdata = types.SimpleNamespace(orderlist=["Lays."], orderlist_num=[1])
+
+        with patch.object(module, "get_grasp_runtime", return_value=runtime), patch.object(
+            module,
+            "_run_closed_set_bottle_grasp",
+            return_value=grasp_result,
+        ) as closed_set_mock, patch.object(module, "_GRASP_BY_CATEGORY") as grasp_by_category_mock:
+            outcome = module.GraspFirstOrderedItemState().execute(userdata)
+
+        self.assertEqual(outcome, "success")
+        closed_set_mock.assert_called_once_with(
+            runtime,
+            category="bottle",
+            closed_set_gdino_prompt="bottle.lays.",
+            target_prompt="lays",
+        )
+        grasp_by_category_mock.assert_not_called()
+
+    def test_grasp_first_ordered_item_should_fallback_to_grasp_by_category_for_unknown_item(self):
+        module = load_module()
+        module.DEBUG = False
+        module.CLOSED_SET_ITEM_NAME_LIST = ["cola", "lays"]
+        runtime = types.SimpleNamespace(name="runtime")
+        grasp_result = types.SimpleNamespace(
+            success=True,
+            status="success",
+            candidate_index=0,
+            message="",
+        )
+        userdata = types.SimpleNamespace(orderlist=["Chips"], orderlist_num=[1])
+
+        with patch.object(module, "get_grasp_runtime", return_value=runtime), patch.object(
+            module,
+            "_run_closed_set_bottle_grasp",
+        ) as closed_set_mock, patch.object(
+            module,
+            "_GRASP_BY_CATEGORY",
+            return_value=grasp_result,
+        ) as grasp_by_category_mock:
+            outcome = module.GraspFirstOrderedItemState().execute(userdata)
+
+        self.assertEqual(outcome, "success")
+        grasp_by_category_mock.assert_called_once_with(runtime, "bottle", bottle_prompt="chips")
+        closed_set_mock.assert_not_called()
+
     def test_find_waving_customers_state_should_store_multiple_points(self):
         module = load_module()
         FakeActionClient.next_result = types.SimpleNamespace(
