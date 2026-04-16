@@ -24,6 +24,7 @@ class DummyNavGoal:
     def __init__(self):
         self.target_mode = None
         self.nav_pose = None
+        self.pid_pose = None
         self.target_name = ""
         self.timeout_sec = 0.0
 
@@ -138,6 +139,7 @@ def load_module():
     fake_voice = _make_module("seu_voice", srv=fake_voice_srv)
     fake_restaurant_states = _make_module(
         "restaurant_states",
+        build_bar_nav_and_pid_poses=lambda *args, **kwargs: (None, None),
         build_customer_nav_pose=lambda *args, **kwargs: None,
         reverse_pose_orientation=lambda pose: pose,
     )
@@ -214,17 +216,16 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
 
         with patch.object(module, "get_grasp_runtime", return_value=runtime), patch.object(
             module,
-            "_run_closed_set_bottle_grasp",
+            "_GRASP_BOTTLE_CLOSED_SET",
             return_value=grasp_result,
-        ) as closed_set_mock, patch.object(module, "_GRASP_BY_CATEGORY") as grasp_by_category_mock:
+        ) as closed_set_mock, patch.object(module, "_GRASP_BOTTLE") as grasp_by_category_mock:
             outcome = module.GraspFirstOrderedItemState().execute(userdata)
 
         self.assertEqual(outcome, "success")
         closed_set_mock.assert_called_once_with(
             runtime,
-            category="bottle",
-            closed_set_gdino_prompt="bottle.lays.",
             target_prompt="lays",
+            gdino_prompt="bottle.lays.",
         )
         grasp_by_category_mock.assert_not_called()
 
@@ -243,16 +244,16 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
 
         with patch.object(module, "get_grasp_runtime", return_value=runtime), patch.object(
             module,
-            "_run_closed_set_bottle_grasp",
+            "_GRASP_BOTTLE_CLOSED_SET",
         ) as closed_set_mock, patch.object(
             module,
-            "_GRASP_BY_CATEGORY",
+            "_GRASP_BOTTLE",
             return_value=grasp_result,
         ) as grasp_by_category_mock:
             outcome = module.GraspFirstOrderedItemState().execute(userdata)
 
         self.assertEqual(outcome, "success")
-        grasp_by_category_mock.assert_called_once_with(runtime, "bottle", bottle_prompt="chips")
+        grasp_by_category_mock.assert_called_once_with(runtime, prompt="chips")
         closed_set_mock.assert_not_called()
 
     def test_find_waving_customers_state_should_store_multiple_points(self):
@@ -295,21 +296,38 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
         self.assertEqual(len(userdata.pending_customer_points), 1)
         self.assertAlmostEqual(userdata.pending_customer_points[0].x, 2.0)
 
-    def test_navigate_back_to_start_pose_should_reverse_bar_pose_inside_state(self):
+    def test_navigate_pose_state_should_forward_pid_pose_when_explicitly_configured(self):
         module = load_module()
         FakeActionClient.next_result = types.SimpleNamespace(success=True)
-        bar_pose = types.SimpleNamespace(name="bar_pose")
-        start_pose = types.SimpleNamespace(name="start_pose")
-        userdata = types.SimpleNamespace(bar_pose_map=bar_pose)
+        nav_pose = types.SimpleNamespace(name="nav_pose")
+        pid_pose = types.SimpleNamespace(name="pid_pose")
+        userdata = types.SimpleNamespace(bar_pose_map=nav_pose, bar_pid_pose_map=pid_pose)
 
-        with patch.object(module, "reverse_pose_orientation", return_value=start_pose) as reverse_mock:
-            outcome = module.NavigateBackToStartPoseState().execute(userdata)
+        outcome = module.NavigatePoseState("bar_pose_map", pid_pose_key="bar_pid_pose_map").execute(userdata)
 
         self.assertEqual(outcome, "success")
-        reverse_mock.assert_called_once_with(bar_pose)
         self.assertEqual(len(FakeActionClient.instances), 1)
         sent_goal = FakeActionClient.instances[0].goals[0]
-        self.assertIs(sent_goal.nav_pose, start_pose)
+        self.assertIs(sent_goal.nav_pose, nav_pose)
+        self.assertIs(sent_goal.pid_pose, pid_pose)
+
+    def test_navigate_back_to_start_pose_should_send_final_bar_nav_and_pid_pose(self):
+        module = load_module()
+        FakeActionClient.next_result = types.SimpleNamespace(success=True)
+        final_nav_pose = types.SimpleNamespace(name="final_nav_pose")
+        final_pid_pose = types.SimpleNamespace(name="final_pid_pose")
+        userdata = types.SimpleNamespace(
+            bar_final_nav_pose_map=final_nav_pose,
+            bar_final_pid_pose_map=final_pid_pose,
+        )
+
+        outcome = module.NavigateBackToStartPoseState().execute(userdata)
+
+        self.assertEqual(outcome, "success")
+        self.assertEqual(len(FakeActionClient.instances), 1)
+        sent_goal = FakeActionClient.instances[0].goals[0]
+        self.assertIs(sent_goal.nav_pose, final_nav_pose)
+        self.assertIs(sent_goal.pid_pose, final_pid_pose)
 
     def test_mark_customer_served_and_decide_should_serve_pending_before_rescan(self):
         module = load_module()

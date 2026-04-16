@@ -13,7 +13,7 @@
 2. 接单；
 3. 回吧台播报订单；
 4. 回顾客处送餐；
-5. 每服务完一人后，回到吧台初始坐标与背对吧台的初始朝向。
+5. 每服务完一人后，回到吧台初始坐标，并在 PID 阶段恢复初始朝向。
 """
 
 import sys
@@ -45,7 +45,7 @@ for search_path in (SCRIPT_DIR, WORKSPACE_SRC_DIR):
     if search_path not in sys.path:
         sys.path.insert(0, search_path)
 
-from restaurant_states import build_customer_nav_pose, reverse_pose_orientation
+from restaurant_states import build_bar_nav_and_pid_poses, build_customer_nav_pose
 
 # --- 配置常量 ---
 WAVE_ACTION_NAME = "find_waving_customer"
@@ -65,13 +65,14 @@ WAVE_TIMEOUT_SEC = 45.0
 WAVE_ANGULAR_SPEED_RAD_S = 0.25
 NAV_TIMEOUT_SEC = 120.0
 STAND_OFF_DISTANCE_M = 1.0
+BAR_NAV_EXTENSION_DISTANCE_M = 1.0
 ALIGN_TIMEOUT_SEC = 20.0
 DIALOG_TIMEOUT_SEC = 5.0
 ORDER_MAX_ROUNDS = 2
-ASK_ORDER_TEXT = "Hello. What would you like to order?"
+ASK_ORDER_TEXT = "Man. What would you like to order?"
 ORDER_REPEAT_PREFIX = "The customer ordered "
 ORDER_REPEAT_SUFFIX = ", please give me them."
-FINAL_DELIVER_TEXT = "I am back. Please take your order. Enjoy your meal."
+FINAL_DELIVER_TEXT = "I am back. Please take your order. Enjoy your meal. you son of bitch"
 GRASP_CATEGORY = "bottle"
 GRASP_PROFILE_BUNDLE_PATH = ""
 GRASP_CONDA_EXE = "conda"
@@ -103,6 +104,7 @@ _GRASP_BOOT_RUNTIME = None
 _GRASP_SHUTDOWN_RUNTIME = None
 _GRASP_BOTTLE = None
 _GRASP_BOTTLE_CLOSED_SET = None
+_PIPER_DELIVER_GET_CONTROLLER = None
 
 DEBUG = False
 
@@ -168,6 +170,26 @@ def shutdown_grasp_runtime():
         _GRASP_RUNTIME = None
 
 
+def load_piper_deliver_api():
+    """按需加载 piper_grab_v2_global 的全局控制器入口。"""
+    global _PIPER_DELIVER_GET_CONTROLLER
+    if _PIPER_DELIVER_GET_CONTROLLER is not None:
+        return
+
+    try:
+        from piper_ros.my_piper.scripts.piper_grab_v2_global import get_controller as piper_get_controller
+    except Exception as exc:
+        raise RuntimeError("failed to import piper_grab_v2_global.get_controller: {}".format(str(exc))) from exc
+
+    _PIPER_DELIVER_GET_CONTROLLER = piper_get_controller
+
+
+def get_piper_deliver_controller():
+    """懒加载并复用送餐阶段使用的 Piper 全局控制器。"""
+    load_piper_deliver_api()
+    return _PIPER_DELIVER_GET_CONTROLLER(register_service=False)
+
+
 def normalize_item_name_for_closed_set(item_name):
     """统一订单物品名和闭集类别名，便于精确匹配。"""
     return str(item_name or "").strip().lower().rstrip(".")
@@ -183,11 +205,13 @@ def build_closed_set_item_name_set():
     return normalized_names
 
 
-def build_nav_goal_from_pose(pose: PoseStamped) -> RestaurantNavGoal:
+def build_nav_goal_from_pose(pose: PoseStamped, pid_pose: PoseStamped = None) -> RestaurantNavGoal:
     """把位姿封装成导航 Goal。"""
     goal = RestaurantNavGoal()
     goal.target_mode = RestaurantNavGoal.TARGET_MODE_POSE
     goal.nav_pose = pose
+    if pid_pose is not None:
+        goal.pid_pose = pid_pose
     goal.timeout_sec = NAV_TIMEOUT_SEC
     return goal
 
@@ -202,26 +226,16 @@ def say_once(text: str):
 
 
 def release_gripper_once(width: float = 0.07, effort: float = 1.0):
-    """通过 piper_ctrl_single_node 的服务松开夹爪，绕过 MoveIt fake trajectory。"""
-    from piper_msgs.srv import Gripper, GripperRequest
-
+    """通过 piper_grab_v2_global 的全局控制器松开夹爪。"""
+    controller = get_piper_deliver_controller()
     rospy.loginfo(
-        "[DELIVER] release gripper via %s | width=%.3f effort=%.2f",
-        PIPER_GRIPPER_SERVICE_NAME,
+        "[DELIVER] release gripper via piper_grab_v2_global | width=%.3f effort=%.2f",
         float(width),
         float(effort),
     )
-    request = GripperRequest()
-    request.gripper_angle = float(width)
-    request.gripper_effort = float(effort)
-    request.gripper_code = 0x01
-    request.set_zero = 0
-
-    rospy.wait_for_service(PIPER_GRIPPER_SERVICE_NAME, timeout=2.0)
-    response = rospy.ServiceProxy(PIPER_GRIPPER_SERVICE_NAME, Gripper).call(request)
-    if not response.status:
-        raise RuntimeError("piper gripper release failed: code={}".format(response.code))
-    rospy.loginfo("[DELIVER] gripper release accepted | code=%s", str(response.code))
+    if not controller.set_gripper_width(float(width)):
+        raise RuntimeError("piper_grab_v2_global failed to open gripper to width={:.3f}".format(float(width)))
+    rospy.loginfo("[DELIVER] gripper released by piper_grab_v2_global")
 
 
 def set_piper_joint_stream_blocked(blocked: bool):
@@ -242,22 +256,15 @@ def set_piper_joint_stream_blocked(blocked: bool):
 
 
 def move_arm_go_zero_once(is_mit_mode: bool = False):
-    """通过 piper_ctrl_single_node 的 go_zero 服务回到机械臂零位。"""
-    from piper_msgs.srv import GoZero, GoZeroRequest
-
+    """通过 piper_grab_v2_global 的全局控制器回到机械臂零位。"""
+    controller = get_piper_deliver_controller()
     rospy.loginfo(
-        "[DELIVER] move arm go-zero via %s | mit_mode=%s",
-        PIPER_GO_ZERO_SERVICE_NAME,
+        "[DELIVER] move arm go-zero via piper_grab_v2_global | mit_mode=%s",
         str(bool(is_mit_mode)),
     )
-    request = GoZeroRequest()
-    request.is_mit_mode = bool(is_mit_mode)
-
-    rospy.wait_for_service(PIPER_GO_ZERO_SERVICE_NAME, timeout=2.0)
-    response = rospy.ServiceProxy(PIPER_GO_ZERO_SERVICE_NAME, GoZero).call(request)
-    if not response.status:
-        raise RuntimeError("piper go zero failed: code={}".format(response.code))
-    rospy.loginfo("[DELIVER] arm go-zero accepted | code=%s", str(response.code))
+    if not controller.move_to_named_pose("zero"):
+        raise RuntimeError("piper_grab_v2_global failed to move arm to named pose 'zero'")
+    rospy.loginfo("[DELIVER] arm returned to named pose 'zero' by piper_grab_v2_global")
 
 
 def convert_count_to_spoken_word(item_count):
@@ -324,15 +331,36 @@ def lookup_robot_pose(timeout_sec=2.0):
 
 
 class CaptureBarPoseState(smach.State):
-    """启动时记录“面朝吧台”的位姿。"""
+    """启动时记录“回吧台”所需的导航点和 PID 点。"""
 
     def __init__(self):
-        smach.State.__init__(self, outcomes=["success", "failure"], output_keys=["bar_pose_map"])
+        smach.State.__init__(
+            self,
+            outcomes=["success", "failure"],
+            output_keys=[
+                "bar_pose_map",
+                "bar_pid_pose_map",
+                "bar_final_nav_pose_map",
+                "bar_final_pid_pose_map",
+            ],
+        )
 
     def execute(self, userdata):
         try:
             current_pose = lookup_robot_pose(timeout_sec=2.0)
-            userdata.bar_pose_map = reverse_pose_orientation(current_pose)
+            bar_nav_pose_map, bar_pid_pose_map = build_bar_nav_and_pid_poses(
+                current_pose,
+                BAR_NAV_EXTENSION_DISTANCE_M,
+            )
+            bar_final_nav_pose_map, bar_final_pid_pose_map = build_bar_nav_and_pid_poses(
+                current_pose,
+                BAR_NAV_EXTENSION_DISTANCE_M,
+                pid_reverse_orientation=False,
+            )
+            userdata.bar_pose_map = bar_nav_pose_map
+            userdata.bar_pid_pose_map = bar_pid_pose_map
+            userdata.bar_final_nav_pose_map = bar_final_nav_pose_map
+            userdata.bar_final_pid_pose_map = bar_final_pid_pose_map
             return "success"
         except Exception as exc:
             rospy.logerr("CaptureBarPoseState execution failed: %s", str(exc))
@@ -452,9 +480,13 @@ class BuildCustomerNavPoseState(smach.State):
 class NavigatePoseState(smach.State):
     """读取指定 userdata 位姿并执行导航。"""
 
-    def __init__(self, pose_key):
-        smach.State.__init__(self, outcomes=["success", "failure"], input_keys=[pose_key])
+    def __init__(self, pose_key, pid_pose_key=None):
+        input_keys = [pose_key]
+        if pid_pose_key is not None:
+            input_keys.append(pid_pose_key)
+        smach.State.__init__(self, outcomes=["success", "failure"], input_keys=input_keys)
         self.pose_key = pose_key
+        self.pid_pose_key = pid_pose_key
 
     def execute(self, userdata):
         client = actionlib.SimpleActionClient(NAV_ACTION_NAME, RestaurantNavAction)
@@ -462,8 +494,9 @@ class NavigatePoseState(smach.State):
             return "failure"
 
         pose = getattr(userdata, self.pose_key)
+        pid_pose = getattr(userdata, self.pid_pose_key) if self.pid_pose_key is not None else None
         for _ in range(2):
-            client.send_goal(build_nav_goal_from_pose(pose))
+            client.send_goal(build_nav_goal_from_pose(pose, pid_pose=pid_pose))
             client.wait_for_result()
             result = client.get_result()
             if result is not None and result.success:
@@ -474,19 +507,27 @@ class NavigatePoseState(smach.State):
 
 
 class NavigateBackToStartPoseState(smach.State):
-    """每服务完一人后，回到吧台初始坐标与背对吧台的朝向。"""
+    """每服务完一人后，回到吧台初始点，并在 PID 阶段恢复初始朝向。"""
 
     def __init__(self):
-        smach.State.__init__(self, outcomes=["success", "failure"], input_keys=["bar_pose_map"])
+        smach.State.__init__(
+            self,
+            outcomes=["success", "failure"],
+            input_keys=["bar_final_nav_pose_map", "bar_final_pid_pose_map"],
+        )
 
     def execute(self, userdata):
         client = actionlib.SimpleActionClient(NAV_ACTION_NAME, RestaurantNavAction)
         if not client.wait_for_server(rospy.Duration(5.0)):
             return "failure"
 
-        start_pose_map = reverse_pose_orientation(userdata.bar_pose_map)
         for _ in range(2):
-            client.send_goal(build_nav_goal_from_pose(start_pose_map))
+            client.send_goal(
+                build_nav_goal_from_pose(
+                    userdata.bar_final_nav_pose_map,
+                    pid_pose=userdata.bar_final_pid_pose_map,
+                )
+            )
             client.wait_for_result()
             result = client.get_result()
             if result is not None and result.success:
@@ -658,14 +699,10 @@ class FinalDeliverSpeakState(smach.State):
     def execute(self, userdata):
         try:
             say_once(FINAL_DELIVER_TEXT)
-            set_piper_joint_stream_blocked(True)
-            try:
-                release_gripper_once()
-                rospy.sleep(1.0)
-                move_arm_go_zero_once()
-                rospy.sleep(4.0)
-            finally:
-                set_piper_joint_stream_blocked(False)
+            release_gripper_once()
+            rospy.sleep(1.0)
+            move_arm_go_zero_once()
+            rospy.sleep(4.0)
             return "success"
         except Exception as exc:
             rospy.logerr("Final deliver release/go-zero failed: %s", str(exc))
@@ -713,7 +750,13 @@ def build_service_one_customer_state_machine():
     """构造“服务一位顾客”的完整子状态机。"""
     service_sm = smach.StateMachine(
         outcomes=["success", "failure"],
-        input_keys=["customer_point_map", "bar_pose_map"],
+        input_keys=[
+            "customer_point_map",
+            "bar_pose_map",
+            "bar_pid_pose_map",
+            "bar_final_nav_pose_map",
+            "bar_final_pid_pose_map",
+        ],
         output_keys=["service_pose_map", "order_text", "orderlist", "orderlist_num"],
     )
 
@@ -735,7 +778,7 @@ def build_service_one_customer_state_machine():
         )
         smach.StateMachine.add(
             "NAV_TO_BAR",
-            NavigatePoseState("bar_pose_map"),
+            NavigatePoseState("bar_pose_map", pid_pose_key="bar_pid_pose_map"),
             transitions={"success": "SPEAK_ORDER_AT_BAR", "failure": "failure"},
         )
         smach.StateMachine.add(

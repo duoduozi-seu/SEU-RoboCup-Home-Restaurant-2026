@@ -24,6 +24,7 @@ class DummyNavGoal:
     def __init__(self):
         self.target_mode = None
         self.nav_pose = None
+        self.pid_pose = None
         self.target_name = ""
         self.timeout_sec = 0.0
 
@@ -113,6 +114,7 @@ def load_module():
     fake_voice = _make_module("seu_voice", srv=fake_voice_srv)
     fake_restaurant_states = _make_module(
         "restaurant_states",
+        build_bar_nav_and_pid_poses=lambda *args, **kwargs: (None, None),
         build_customer_nav_pose=lambda *args, **kwargs: None,
         reverse_pose_orientation=lambda pose: pose,
     )
@@ -144,23 +146,44 @@ def load_module():
 class CaptureBarPoseStateTest(unittest.TestCase):
     """启动位姿捕获状态测试。"""
 
-    def test_capture_bar_pose_state_reads_pose_and_saves_reversed_pose(self):
+    def test_capture_bar_pose_state_reads_pose_and_saves_grasp_and_final_bar_targets(self):
         module = load_module()
         current_pose = types.SimpleNamespace(name="current_pose")
-        reversed_pose = types.SimpleNamespace(name="reversed_pose")
+        bar_nav_pose = types.SimpleNamespace(name="bar_nav_pose")
+        bar_pid_pose = types.SimpleNamespace(name="bar_pid_pose")
+        bar_final_nav_pose = types.SimpleNamespace(name="bar_final_nav_pose")
+        bar_final_pid_pose = types.SimpleNamespace(name="bar_final_pid_pose")
         userdata = types.SimpleNamespace()
 
         with patch.object(module, "lookup_robot_pose", return_value=current_pose) as lookup_mock, patch.object(
             module,
-            "reverse_pose_orientation",
-            return_value=reversed_pose,
-        ) as reverse_mock:
+            "build_bar_nav_and_pid_poses",
+            side_effect=[
+                (bar_nav_pose, bar_pid_pose),
+                (bar_final_nav_pose, bar_final_pid_pose),
+            ],
+        ) as build_bar_mock:
             outcome = module.CaptureBarPoseState().execute(userdata)
 
         self.assertEqual(outcome, "success")
-        self.assertIs(userdata.bar_pose_map, reversed_pose)
+        self.assertIs(userdata.bar_pose_map, bar_nav_pose)
+        self.assertIs(userdata.bar_pid_pose_map, bar_pid_pose)
+        self.assertIs(userdata.bar_final_nav_pose_map, bar_final_nav_pose)
+        self.assertIs(userdata.bar_final_pid_pose_map, bar_final_pid_pose)
         lookup_mock.assert_called_once_with(timeout_sec=2.0)
-        reverse_mock.assert_called_once_with(current_pose)
+        self.assertEqual(build_bar_mock.call_count, 2)
+        self.assertEqual(
+            build_bar_mock.call_args_list[0].args,
+            (current_pose, module.BAR_NAV_EXTENSION_DISTANCE_M),
+        )
+        self.assertEqual(
+            build_bar_mock.call_args_list[1].args,
+            (current_pose, module.BAR_NAV_EXTENSION_DISTANCE_M),
+        )
+        self.assertEqual(
+            build_bar_mock.call_args_list[1].kwargs,
+            {"pid_reverse_orientation": False},
+        )
 
 
 if __name__ == "__main__":

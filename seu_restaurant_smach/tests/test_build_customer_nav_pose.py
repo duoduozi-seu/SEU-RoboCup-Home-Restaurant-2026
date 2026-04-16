@@ -14,7 +14,12 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1] / 'scripts'
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from restaurant_states import build_customer_nav_pose, odometry_to_pose_stamped, reverse_pose_orientation
+from restaurant_states import (
+    build_bar_nav_and_pid_poses,
+    build_customer_nav_pose,
+    odometry_to_pose_stamped,
+    reverse_pose_orientation,
+)
 
 
 def _yaw_from_quaternion(quaternion):
@@ -26,6 +31,47 @@ def _yaw_from_quaternion(quaternion):
 
 class BuildCustomerNavPoseTest(unittest.TestCase):
     '''顾客导航位姿构造测试。'''
+
+    def test_build_bar_nav_and_pid_poses_should_extend_nav_and_keep_pid_at_start(self):
+        start_pose = PoseStamped()
+        start_pose.header.frame_id = 'odom'
+        start_pose.pose.position.x = 1.0
+        start_pose.pose.position.y = 2.0
+        start_pose.pose.position.z = 0.0
+        start_pose.pose.orientation.z = math.sin(math.pi / 4.0)
+        start_pose.pose.orientation.w = math.cos(math.pi / 4.0)
+
+        nav_pose, pid_pose = build_bar_nav_and_pid_poses(start_pose, 1.0)
+
+        self.assertEqual(nav_pose.header.frame_id, 'odom')
+        self.assertTrue(math.isclose(nav_pose.pose.position.x, 1.0, rel_tol=0.0, abs_tol=1e-6))
+        self.assertTrue(math.isclose(nav_pose.pose.position.y, 3.0, rel_tol=0.0, abs_tol=1e-6))
+        self.assertTrue(math.isclose(pid_pose.pose.position.x, 1.0, rel_tol=0.0, abs_tol=1e-6))
+        self.assertTrue(math.isclose(pid_pose.pose.position.y, 2.0, rel_tol=0.0, abs_tol=1e-6))
+        self.assertTrue(
+            math.isclose(_yaw_from_quaternion(nav_pose.pose.orientation), -math.pi / 2.0, rel_tol=0.0, abs_tol=1e-6)
+        )
+        self.assertTrue(
+            math.isclose(_yaw_from_quaternion(pid_pose.pose.orientation), -math.pi / 2.0, rel_tol=0.0, abs_tol=1e-6)
+        )
+
+    def test_build_bar_nav_and_pid_poses_should_keep_final_return_pid_orientation_when_requested(self):
+        start_pose = PoseStamped()
+        start_pose.header.frame_id = 'odom'
+        start_pose.pose.position.x = 1.0
+        start_pose.pose.position.y = 2.0
+        start_pose.pose.position.z = 0.0
+        start_pose.pose.orientation.z = math.sin(math.pi / 4.0)
+        start_pose.pose.orientation.w = math.cos(math.pi / 4.0)
+
+        nav_pose, pid_pose = build_bar_nav_and_pid_poses(start_pose, 1.0, pid_reverse_orientation=False)
+
+        self.assertTrue(
+            math.isclose(_yaw_from_quaternion(nav_pose.pose.orientation), -math.pi / 2.0, rel_tol=0.0, abs_tol=1e-6)
+        )
+        self.assertTrue(
+            math.isclose(_yaw_from_quaternion(pid_pose.pose.orientation), math.pi / 2.0, rel_tol=0.0, abs_tol=1e-6)
+        )
 
     def test_build_customer_nav_pose_keeps_raw_person_position_and_faces_person(self):
         robot_pose = PoseStamped()

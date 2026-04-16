@@ -47,6 +47,48 @@ def reverse_pose_orientation(pose: PoseStamped) -> PoseStamped:
     return reversed_pose
 
 
+def build_bar_nav_and_pid_poses(start_pose: PoseStamped, extension_distance: float, pid_reverse_orientation: bool = True):
+    """根据启动位姿生成“回吧台”的导航点和 PID 点。
+
+    `pid_pose` 保留原始启动坐标，朝向可按场景选择是否反向；
+    `nav_pose` 沿启动时的原始朝向前推 `extension_distance`，朝向同样反向。
+    """
+    if extension_distance < 0.0:
+        raise ValueError("extension_distance must be non-negative")
+
+    current_yaw = euler_from_quaternion([
+        start_pose.pose.orientation.x,
+        start_pose.pose.orientation.y,
+        start_pose.pose.orientation.z,
+        start_pose.pose.orientation.w,
+    ])[2]
+    reversed_yaw = current_yaw + math.pi
+    nav_quaternion = quaternion_from_euler(0.0, 0.0, reversed_yaw)
+    pid_yaw = reversed_yaw if pid_reverse_orientation else current_yaw
+    pid_quaternion = quaternion_from_euler(0.0, 0.0, pid_yaw)
+
+    pid_pose = PoseStamped()
+    pid_pose.header = start_pose.header
+    pid_pose.pose.position.x = start_pose.pose.position.x
+    pid_pose.pose.position.y = start_pose.pose.position.y
+    pid_pose.pose.position.z = start_pose.pose.position.z
+    pid_pose.pose.orientation.x = pid_quaternion[0]
+    pid_pose.pose.orientation.y = pid_quaternion[1]
+    pid_pose.pose.orientation.z = pid_quaternion[2]
+    pid_pose.pose.orientation.w = pid_quaternion[3]
+
+    nav_pose = PoseStamped()
+    nav_pose.header = start_pose.header
+    nav_pose.pose.position.x = start_pose.pose.position.x + extension_distance * math.cos(current_yaw)
+    nav_pose.pose.position.y = start_pose.pose.position.y + extension_distance * math.sin(current_yaw)
+    nav_pose.pose.position.z = start_pose.pose.position.z
+    nav_pose.pose.orientation.x = nav_quaternion[0]
+    nav_pose.pose.orientation.y = nav_quaternion[1]
+    nav_pose.pose.orientation.z = nav_quaternion[2]
+    nav_pose.pose.orientation.w = nav_quaternion[3]
+    return nav_pose, pid_pose
+
+
 def build_customer_nav_pose(robot_pose: PoseStamped, person_point, stand_off_distance: float) -> PoseStamped:
     """根据顾客点和机器人当前位置，构造发给下游导航的原始请求位姿。
 

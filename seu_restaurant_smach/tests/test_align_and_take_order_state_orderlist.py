@@ -24,6 +24,7 @@ class DummyNavGoal:
     def __init__(self):
         self.target_mode = None
         self.nav_pose = None
+        self.pid_pose = None
         self.target_name = ""
         self.timeout_sec = 0.0
 
@@ -134,6 +135,7 @@ def load_module():
     fake_voice = _make_module("seu_voice", srv=fake_voice_srv)
     fake_restaurant_states = _make_module(
         "restaurant_states",
+        build_bar_nav_and_pid_poses=lambda *args, **kwargs: (None, None),
         build_customer_nav_pose=lambda *args, **kwargs: None,
         reverse_pose_orientation=lambda pose: pose,
     )
