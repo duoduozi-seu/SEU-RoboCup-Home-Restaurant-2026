@@ -101,9 +101,9 @@ class WaveGeometryTest(unittest.TestCase):
         self.assertAlmostEqual(base_link_point[2], 0.1)
 
     def test_base_link_point_to_map_point_with_zero_yaw(self):
-        """机器人朝向 map x 正方向时，base_link 点应直接平移到 map。"""
+        """机器人朝向 odom x 正方向时，base_link 点应直接平移到 odom。"""
         robot_pose = PoseStamped()
-        robot_pose.header.frame_id = "map"
+        robot_pose.header.frame_id = "odom"
         robot_pose.pose.position.x = 2.0
         robot_pose.pose.position.y = 3.0
         robot_pose.pose.position.z = 0.0
@@ -116,9 +116,9 @@ class WaveGeometryTest(unittest.TestCase):
         self.assertAlmostEqual(map_point.z, 0.2)
 
     def test_base_link_point_to_map_point_with_ninety_degree_yaw(self):
-        """机器人左转 90 度时，base_link x 方向应落到 map y 正方向。"""
+        """机器人左转 90 度时，base_link x 方向应落到 odom y 正方向。"""
         robot_pose = PoseStamped()
-        robot_pose.header.frame_id = "map"
+        robot_pose.header.frame_id = "odom"
         robot_pose.pose.position.x = 1.0
         robot_pose.pose.position.y = 2.0
         robot_pose.pose.position.z = 0.0
@@ -139,7 +139,7 @@ class WaveGeometryTest(unittest.TestCase):
 
         marker = build_target_marker(point)
 
-        self.assertEqual(marker.header.frame_id, "map")
+        self.assertEqual(marker.header.frame_id, "odom")
         self.assertEqual(marker.ns, MARKER_NS)
         self.assertEqual(marker.id, 0)
         self.assertEqual(marker.type, Marker.SPHERE)
@@ -169,7 +169,7 @@ class WaveGeometryTest(unittest.TestCase):
         """没有目标时，应发布 DELETE marker 清理 RViz 中的旧点。"""
         marker = build_delete_marker()
 
-        self.assertEqual(marker.header.frame_id, "map")
+        self.assertEqual(marker.header.frame_id, "odom")
         self.assertEqual(marker.ns, MARKER_NS)
         self.assertEqual(marker.id, 0)
         self.assertEqual(marker.action, Marker.DELETE)

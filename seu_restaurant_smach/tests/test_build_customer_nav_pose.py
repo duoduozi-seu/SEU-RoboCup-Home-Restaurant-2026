@@ -29,7 +29,7 @@ class BuildCustomerNavPoseTest(unittest.TestCase):
 
     def test_build_customer_nav_pose_keeps_raw_person_position_and_faces_person(self):
         robot_pose = PoseStamped()
-        robot_pose.header.frame_id = 'map'
+        robot_pose.header.frame_id = 'odom'
         robot_pose.pose.position.x = 0.0
         robot_pose.pose.position.y = 0.0
         robot_pose.pose.orientation.w = 1.0
@@ -41,14 +41,14 @@ class BuildCustomerNavPoseTest(unittest.TestCase):
 
         nav_pose = build_customer_nav_pose(robot_pose, person_point, 1.0)
 
-        self.assertEqual(nav_pose.header.frame_id, 'map')
+        self.assertEqual(nav_pose.header.frame_id, 'odom')
         self.assertTrue(math.isclose(nav_pose.pose.position.x, 2.0, rel_tol=0.0, abs_tol=1e-6))
         self.assertTrue(math.isclose(nav_pose.pose.position.y, 0.0, rel_tol=0.0, abs_tol=1e-6))
         self.assertTrue(math.isclose(_yaw_from_quaternion(nav_pose.pose.orientation), 0.0, rel_tol=0.0, abs_tol=1e-6))
 
     def test_build_customer_nav_pose_faces_person_even_when_off_axis(self):
         robot_pose = PoseStamped()
-        robot_pose.header.frame_id = 'map'
+        robot_pose.header.frame_id = 'odom'
         robot_pose.pose.position.x = 1.0
         robot_pose.pose.position.y = 1.0
         robot_pose.pose.orientation.w = 1.0
@@ -66,7 +66,7 @@ class BuildCustomerNavPoseTest(unittest.TestCase):
 
     def test_odometry_to_pose_stamped_copies_header_and_pose(self):
         odom = Odometry()
-        odom.header.frame_id = 'map'
+        odom.header.frame_id = 'odom'
         odom.pose.pose.position.x = 1.5
         odom.pose.pose.position.y = -0.4
         odom.pose.pose.position.z = 0.2
@@ -75,7 +75,7 @@ class BuildCustomerNavPoseTest(unittest.TestCase):
 
         pose = odometry_to_pose_stamped(odom)
 
-        self.assertEqual(pose.header.frame_id, 'map')
+        self.assertEqual(pose.header.frame_id, 'odom')
         self.assertTrue(math.isclose(pose.pose.position.x, 1.5, rel_tol=0.0, abs_tol=1e-6))
         self.assertTrue(math.isclose(pose.pose.position.y, -0.4, rel_tol=0.0, abs_tol=1e-6))
         self.assertTrue(math.isclose(pose.pose.orientation.z, 0.3, rel_tol=0.0, abs_tol=1e-6))
@@ -83,7 +83,7 @@ class BuildCustomerNavPoseTest(unittest.TestCase):
 
     def test_reverse_pose_orientation_keeps_position_and_turns_back(self):
         pose = PoseStamped()
-        pose.header.frame_id = 'map'
+        pose.header.frame_id = 'odom'
         pose.pose.position.x = 1.2
         pose.pose.position.y = -0.8
         pose.pose.position.z = 0.0
@@ -91,7 +91,7 @@ class BuildCustomerNavPoseTest(unittest.TestCase):
 
         reversed_pose = reverse_pose_orientation(pose)
 
-        self.assertEqual(reversed_pose.header.frame_id, 'map')
+        self.assertEqual(reversed_pose.header.frame_id, 'odom')
         self.assertTrue(math.isclose(reversed_pose.pose.position.x, 1.2, rel_tol=0.0, abs_tol=1e-6))
         self.assertTrue(math.isclose(reversed_pose.pose.position.y, -0.8, rel_tol=0.0, abs_tol=1e-6))
         self.assertTrue(math.isclose(abs(_yaw_from_quaternion(reversed_pose.pose.orientation)), math.pi, rel_tol=0.0, abs_tol=1e-6))

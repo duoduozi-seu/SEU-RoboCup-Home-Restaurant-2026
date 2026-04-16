@@ -65,7 +65,7 @@ def build_customer_nav_pose(robot_pose: PoseStamped, person_point, stand_off_dis
     target_yaw = math.atan2(dy, dx)
 
     nav_pose = PoseStamped()
-    nav_pose.header.frame_id = robot_pose.header.frame_id or "map"
+    nav_pose.header.frame_id = robot_pose.header.frame_id or "odom"
     nav_pose.pose.position.x = person_point.x
     nav_pose.pose.position.y = person_point.y
     nav_pose.pose.position.z = 0.0

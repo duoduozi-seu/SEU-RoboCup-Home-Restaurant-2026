@@ -32,6 +32,7 @@ SERVICE_NAME = 'nav_service'          # ROS 服务名称，上层状态机通过
 ACTION_NAME = 'task_nav'              # catkin_robocup_2 提供的导航 Action 名称
 DEFAULT_TIMEOUT_SEC = 120             # 默认导航超时时间（秒）
 ACTION_CONNECT_TIMEOUT_SEC = 10       # 等待 Action Server 连接的超时时间（秒）
+ODOM_FRAME = 'odom'
 
 # 硬编码航点文件路径，相对于当前脚本位置
 WAYPOINTS_YAML_PATH = os.path.join(
@@ -170,7 +171,7 @@ class NavServiceNode:
         
         # 1) 构造 nav_pose
         nav_p = PoseStamped()
-        nav_p.header.frame_id = 'map'
+        nav_p.header.frame_id = ODOM_FRAME
         nav_p.header.stamp = rospy.Time.now()
         
         # 与作者脚本保持一致的高度对齐层级结构取值
@@ -184,7 +185,7 @@ class NavServiceNode:
         
         # 2) 构造 pid_pose
         pid_p = PoseStamped()
-        pid_p.header.frame_id = 'map'
+        pid_p.header.frame_id = ODOM_FRAME
         pid_p.header.stamp = rospy.Time.now()
         
         pid_p.pose.position.x = wp['pid_pose']['position']['x']

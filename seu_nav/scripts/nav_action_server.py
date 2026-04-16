@@ -33,6 +33,7 @@ ACTION_NAME = 'restaurant_nav'
 DOWNSTREAM_ACTION_NAME = 'task_nav'
 DEFAULT_TIMEOUT_SEC = 120.0
 ACTION_CONNECT_TIMEOUT_SEC = 10.0
+ODOM_FRAME = 'odom'
 WAYPOINTS_YAML_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     'config',
@@ -43,7 +44,7 @@ WAYPOINTS_YAML_PATH = os.path.join(
 def build_pose_from_waypoint_dict(pose_dict):
     '''把 YAML 中的 pose 字典转换成 PoseStamped。'''
     pose = PoseStamped()
-    pose.header.frame_id = 'map'
+    pose.header.frame_id = ODOM_FRAME
     pose.pose.position.x = pose_dict['position']['x']
     pose.pose.position.y = pose_dict['position']['y']
     pose.pose.position.z = pose_dict['position']['z']
@@ -91,6 +92,19 @@ class RestaurantNavActionServer:
             data = loaded
         return data
 
+    @staticmethod
+    def _ensure_odom_pose(pose, pose_name, allow_empty_frame=False):
+        '''确保传给下游 task_nav 的目标使用 odom 坐标系。'''
+        frame_id = pose.header.frame_id
+        if not frame_id:
+            if allow_empty_frame:
+                return pose
+            pose.header.frame_id = ODOM_FRAME
+            return pose
+        if frame_id != ODOM_FRAME:
+            raise ValueError('{} frame must be "{}", got "{}"'.format(pose_name, ODOM_FRAME, frame_id))
+        return pose
+
     def _build_task_goal_from_goal(self, goal):
         '''把上游 RestaurantNav goal 转成下游 TaskNavGoal。'''
         if goal.target_mode == goal.TARGET_MODE_NAME:
@@ -101,8 +115,10 @@ class RestaurantNavActionServer:
         elif goal.target_mode == goal.TARGET_MODE_POSE:
             nav_pose = copy.deepcopy(goal.nav_pose)
             pid_pose = copy.deepcopy(goal.pid_pose)
+            nav_pose = self._ensure_odom_pose(nav_pose, 'nav_pose')
+            pid_pose = self._ensure_odom_pose(pid_pose, 'pid_pose', allow_empty_frame=True)
             rospy.loginfo(
-                '[seu_nav] forwarding raw pose goal downstream: (%.3f, %.3f)',
+                '[seu_nav] forwarding odom pose goal downstream: (%.3f, %.3f)',
                 nav_pose.pose.position.x,
                 nav_pose.pose.position.y,
             )

@@ -26,7 +26,7 @@ from wave_detector_core import WaveDetectorRuntime
 
 
 ACTION_NAME = "find_waving_customer"
-MAP_FRAME = "map"
+ODOM_FRAME = "odom"
 ROBOT_BASE_FRAME = "base_link"
 CMD_VEL_TOPIC = "/cmd_vel"
 DEBUG_IMAGE_TOPIC = "/restaurant_wave/debug_image"
@@ -53,11 +53,11 @@ def camera_point_to_base_link_point(camera_point):
 
 
 def base_link_point_to_map_point(robot_pose, base_link_point):
-    """把 base_link 坐标系下的点，用当前机器人位姿换算到 map 坐标系。
+    """把 base_link 坐标系下的点，用当前机器人位姿换算到 odom 坐标系。
 
-    这里直接使用当前 `/map_to_baselink` 给出的二维位姿：
-    1. base_link x 前进方向映射到 map 平面；
-    2. base_link y 左向映射到 map 平面；
+    这里直接使用当前 odom -> base_link 给出的二维位姿：
+    1. base_link x 前进方向映射到 odom 平面；
+    2. base_link y 左向映射到 odom 平面；
     3. z 直接叠加。
     """
     quaternion = (
@@ -80,7 +80,7 @@ def build_target_marker(person_point_map, marker_id=0):
     """为当前目标人构造 RViz marker。"""
     marker = Marker()
     marker.header.stamp = rospy.Time(0)
-    marker.header.frame_id = "map"
+    marker.header.frame_id = ODOM_FRAME
     marker.ns = MARKER_NS
     marker.id = int(marker_id)
     marker.type = Marker.SPHERE
@@ -103,7 +103,7 @@ def build_delete_marker(marker_id=0):
     """构造删除 marker 的消息，避免 RViz 残留旧点。"""
     marker = Marker()
     marker.header.stamp = rospy.Time(0)
-    marker.header.frame_id = "map"
+    marker.header.frame_id = ODOM_FRAME
     marker.ns = MARKER_NS
     marker.id = int(marker_id)
     marker.action = Marker.DELETE
@@ -146,9 +146,9 @@ class FindWavingCustomerActionServer:
         self.cmd_vel_pub.publish(Twist())
 
     def _get_current_pose(self):
-        """直接从 TF 读取 map -> base_link 当前位姿。"""
+        """直接从 TF 读取 odom -> base_link 当前位姿。"""
         transform_message = self.tf_buffer.lookup_transform(
-            MAP_FRAME,
+            ODOM_FRAME,
             ROBOT_BASE_FRAME,
             rospy.Time(0),
             rospy.Duration(2.0),
@@ -156,7 +156,7 @@ class FindWavingCustomerActionServer:
         return self._transform_to_pose_stamped(transform_message)
 
     def _camera_point_to_map(self, camera_point):
-        """把检测点直接按 base_link 共点假设转到 map。"""
+        """把检测点直接按 base_link 共点假设转到 odom。"""
         robot_pose = self._get_current_pose()
         base_link_point = camera_point_to_base_link_point(camera_point)
         return base_link_point_to_map_point(robot_pose, base_link_point)

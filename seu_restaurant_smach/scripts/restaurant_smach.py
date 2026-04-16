@@ -56,7 +56,7 @@ PIPER_GRIPPER_SERVICE_NAME = "gripper_srv"
 PIPER_GO_ZERO_SERVICE_NAME = "go_zero_srv"
 PIPER_BLOCK_ARM_SERVICE_NAME = "block_arm"
 
-MAP_FRAME = "map"
+ODOM_FRAME = "odom"
 ROBOT_BASE_FRAME = "base_link"
 
 TARGET_CUSTOMER_COUNT = 2
@@ -306,9 +306,9 @@ def get_tf_buffer():
 
 
 def lookup_robot_pose(timeout_sec=2.0):
-    """直接从 TF 读取 map->base_link 当前位姿。"""
+    """直接从 TF 读取 odom->base_link 当前位姿。"""
     transform = get_tf_buffer().lookup_transform(
-        MAP_FRAME,
+        ODOM_FRAME,
         ROBOT_BASE_FRAME,
         rospy.Time(0),
         rospy.Duration(timeout_sec),

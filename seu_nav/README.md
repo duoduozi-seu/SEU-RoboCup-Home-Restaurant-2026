@@ -50,14 +50,14 @@ rosrun seu_nav nav_action_server.py
 | `scripts/nav_action_server.py` | `ROBOT_POSE_TOPIC` `GLOBAL_COSTMAP_TOPIC` `MAKE_PLAN_SERVICE_NAME` | 导航相关话题与服务 |
 | `scripts/nav_action_server.py` | `DEFAULT_TIMEOUT_SEC` `DEFAULT_GOAL_SEARCH_RADIUS_M` `MAKE_PLAN_TOLERANCE_M` | 超时与可达点搜索参数 |
 | `scripts/nav_action_server.py` | `WAYPOINTS_YAML_PATH` | 航点文件路径 |
-| `config/waypoints.yaml` | `waypoints` 下各地点的 `nav_pose` 和 `pid_pose` | 场地标定数据 |
+| `config/waypoints.yaml` | `waypoints` 下各地点的 `nav_pose` 和 `pid_pose` | `odom` 坐标系下的场地标定数据 |
 
 ## 技术栈 / Pipeline
 
 1. 上游状态机发送 `RestaurantNav` Action Goal。
-2. 若是名字模式，则从 `config/waypoints.yaml` 读取 `nav_pose` 和 `pid_pose`。
-3. 若是位姿模式，则结合 costmap 和 `make_plan` 计算最近可达点。
-4. 将结果转换成下游 `task_nav` Goal 发送给 `tracer_nav`。
+2. 若是名字模式，则从 `config/waypoints.yaml` 读取 `odom` 语义的 `nav_pose` 和 `pid_pose`。
+3. 若是位姿模式，则校验目标 frame 为空或 `odom`，并把空 frame 补成 `odom`。
+4. 将 `odom` 目标发送给下游 `tracer_nav` 的 `task_nav`。
 5. 返回导航成功或失败结果给上层状态机。
 
 ---

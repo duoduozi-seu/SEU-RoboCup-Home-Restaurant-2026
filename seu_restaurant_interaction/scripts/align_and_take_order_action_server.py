@@ -33,7 +33,7 @@ from person_align_core import classify_confirmation_text, select_nearest_person_
 
 ACTION_NAME = "align_and_take_order"
 ORDER_PARSER_ACTION_NAME = "parse_restaurant_order"
-MAP_FRAME = "map"
+ODOM_FRAME = "odom"
 ROBOT_BASE_FRAME = "base_link"
 CMD_VEL_TOPIC = "/cmd_vel"
 VOICE_SERVICE_NAME = "voice_service"
@@ -295,9 +295,9 @@ class AlignAndTakeOrderActionServer:
         rospy.loginfo("[restaurant_interaction] action ready: %s", ACTION_NAME)
 
     def _get_current_pose(self):
-        """直接从 TF 读取 map -> base_link 当前位姿。"""
+        """直接从 TF 读取 odom -> base_link 当前位姿。"""
         transform_message = self.tf_buffer.lookup_transform(
-            MAP_FRAME,
+            ODOM_FRAME,
             ROBOT_BASE_FRAME,
             rospy.Time(0),
             rospy.Duration(2.0),

@@ -437,7 +437,7 @@ class WaveDetectorRuntime:
         return candidate
 
     def _attach_camera_points_to_candidates(self, depth_frame, candidates):
-        """给当前候选补上相机坐标，便于上层做 map 投影与去重。"""
+        """给当前候选补上相机坐标，便于上层做 odom 投影与去重。"""
         intrinsics = depth_frame.get_profile().as_video_stream_profile().get_intrinsics()
         enriched_candidates = []
 
