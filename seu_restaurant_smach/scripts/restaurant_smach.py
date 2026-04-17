@@ -69,10 +69,11 @@ BAR_NAV_EXTENSION_DISTANCE_M = 1.0
 ALIGN_TIMEOUT_SEC = 20.0
 DIALOG_TIMEOUT_SEC = 5.0
 ORDER_MAX_ROUNDS = 2
-ASK_ORDER_TEXT = "Man. What would you like to order?"
+ASK_ORDER_TEXT = "Man. What would you like to order you son of bitch?"
 ORDER_REPEAT_PREFIX = "The customer ordered "
 ORDER_REPEAT_SUFFIX = ", please give me them."
 FINAL_DELIVER_TEXT = "I am back. Please take your order. Enjoy your meal. you son of bitch"
+POST_GRASP_REQUEST_TEXT = "please give me the rest things"
 GRASP_CATEGORY = "bottle"
 GRASP_PROFILE_BUNDLE_PATH = ""
 GRASP_CONDA_EXE = "conda"
@@ -225,6 +226,14 @@ def say_once(text: str):
         raise RuntimeError("voice service failed: {}".format(response.errormsg))
 
 
+def say_post_grasp_request_once():
+    """抓取状态结束后，统一提示补齐剩余物品。"""
+    try:
+        say_once(POST_GRASP_REQUEST_TEXT)
+    except Exception as exc:
+        rospy.logerr("Post-grasp prompt failed: %s", str(exc))
+
+
 def release_gripper_once(width: float = 0.07, effort: float = 1.0):
     """通过 piper_grab_v2_global 的全局控制器松开夹爪。"""
     controller = get_piper_deliver_controller()
@@ -356,6 +365,7 @@ class CaptureBarPoseState(smach.State):
                 current_pose,
                 BAR_NAV_EXTENSION_DISTANCE_M,
                 pid_reverse_orientation=False,
+                nav_reverse_orientation=False,
             )
             userdata.bar_pose_map = bar_nav_pose_map
             userdata.bar_pid_pose_map = bar_pid_pose_map
@@ -507,13 +517,13 @@ class NavigatePoseState(smach.State):
 
 
 class NavigateBackToStartPoseState(smach.State):
-    """每服务完一人后，回到吧台初始点，并在 PID 阶段恢复初始朝向。"""
+    """每服务完一人后，回到吧台外延导航点，并保持初始朝向。"""
 
     def __init__(self):
         smach.State.__init__(
             self,
             outcomes=["success", "failure"],
-            input_keys=["bar_final_nav_pose_map", "bar_final_pid_pose_map"],
+            input_keys=["bar_final_nav_pose_map"],
         )
 
     def execute(self, userdata):
@@ -522,12 +532,7 @@ class NavigateBackToStartPoseState(smach.State):
             return "failure"
 
         for _ in range(2):
-            client.send_goal(
-                build_nav_goal_from_pose(
-                    userdata.bar_final_nav_pose_map,
-                    pid_pose=userdata.bar_final_pid_pose_map,
-                )
-            )
+            client.send_goal(build_nav_goal_from_pose(userdata.bar_final_nav_pose_map))
             client.wait_for_result()
             result = client.get_result()
             if result is not None and result.success:
@@ -613,81 +618,84 @@ class GraspFirstOrderedItemState(smach.State):
         )
 
     def execute(self, userdata):
-        if DEBUG is True:
-            return "success"
         CATEGORY = GRASP_CATEGORY
         CLOSED_SET_GDINO_PROMPT = "bottle.lays."
 
         orderlist = list(getattr(userdata, "orderlist", []) or [])
         orderlist_num = list(getattr(userdata, "orderlist_num", []) or [])
-
-        if not orderlist:
-            rospy.logwarn("Grasp skipped: orderlist is empty.")
-            return "failure"
-
-        raw_target_item_name = str(orderlist[0]).strip()
-        target_item_name = normalize_item_name_for_closed_set(raw_target_item_name)
-        target_item_count = orderlist_num[0] if orderlist_num else 1
-        if not target_item_name:
-            rospy.logwarn("Grasp skipped: first ordered item is empty.")
-            return "failure"
-
-        closed_set_item_names = build_closed_set_item_name_set()
-        use_closed_set = target_item_name in closed_set_item_names
-        grasp_route = "closed_set" if use_closed_set else "grasp_bottle"
-        bottle_prompt = CLOSED_SET_GDINO_PROMPT if use_closed_set else target_item_name
-
-        rospy.loginfo(
-            "Grasp first ordered item once | route=%s category=%s item=%s normalized_item=%s requested_count=%s gdino_prompt=%s",
-            grasp_route,
-            CATEGORY,
-            raw_target_item_name,
-            target_item_name,
-            str(target_item_count),
-            bottle_prompt,
-        )
+        outcome = "failure"
 
         try:
-            runtime = get_grasp_runtime()
-            if use_closed_set:
-                grasp_result = _GRASP_BOTTLE_CLOSED_SET(
-                    runtime,
-                    target_prompt=target_item_name,
-                    gdino_prompt=CLOSED_SET_GDINO_PROMPT,
-                )
-            else:
-                grasp_result = _GRASP_BOTTLE(
-                    runtime,
-                    prompt=bottle_prompt,
-                )
-        except Exception as exc:
-            rospy.logerr(
-                "Grasp phase exception | route=%s category=%s item=%s error=%s",
+            if not orderlist:
+                rospy.logwarn("Grasp skipped: orderlist is empty.")
+                return outcome
+
+            raw_target_item_name = str(orderlist[0]).strip()
+            target_item_name = normalize_item_name_for_closed_set(raw_target_item_name)
+            target_item_count = orderlist_num[0] if orderlist_num else 1
+            if not target_item_name:
+                rospy.logwarn("Grasp skipped: first ordered item is empty.")
+                return outcome
+
+            closed_set_item_names = build_closed_set_item_name_set()
+            use_closed_set = target_item_name in closed_set_item_names
+            grasp_route = "closed_set" if use_closed_set else "grasp_bottle"
+            bottle_prompt = CLOSED_SET_GDINO_PROMPT if use_closed_set else target_item_name
+
+            rospy.loginfo(
+                "Grasp first ordered item once | route=%s category=%s item=%s normalized_item=%s requested_count=%s gdino_prompt=%s",
                 grasp_route,
                 CATEGORY,
+                raw_target_item_name,
                 target_item_name,
-                str(exc),
+                str(target_item_count),
+                bottle_prompt,
             )
-            return "failure"
 
-        if grasp_result.success:
-            rospy.loginfo(
-                "Grasp succeeded | route=%s item=%s status=%s candidate_index=%s",
+            try:
+                runtime = get_grasp_runtime()
+                if use_closed_set:
+                    grasp_result = _GRASP_BOTTLE_CLOSED_SET(
+                        runtime,
+                        target_prompt=target_item_name,
+                        gdino_prompt=CLOSED_SET_GDINO_PROMPT,
+                    )
+                else:
+                    grasp_result = _GRASP_BOTTLE(
+                        runtime,
+                        prompt=bottle_prompt,
+                    )
+            except Exception as exc:
+                rospy.logerr(
+                    "Grasp phase exception | route=%s category=%s item=%s error=%s",
+                    grasp_route,
+                    CATEGORY,
+                    target_item_name,
+                    str(exc),
+                )
+                return outcome
+
+            if grasp_result.success:
+                rospy.loginfo(
+                    "Grasp succeeded | route=%s item=%s status=%s candidate_index=%s",
+                    grasp_route,
+                    target_item_name,
+                    grasp_result.status,
+                    str(grasp_result.candidate_index),
+                )
+                outcome = "success"
+                return outcome
+
+            rospy.logwarn(
+                "Grasp failed | route=%s item=%s status=%s message=%s",
                 grasp_route,
                 target_item_name,
                 grasp_result.status,
-                str(grasp_result.candidate_index),
+                grasp_result.message,
             )
-            return "success"
-
-        rospy.logwarn(
-            "Grasp failed | route=%s item=%s status=%s message=%s",
-            grasp_route,
-            target_item_name,
-            grasp_result.status,
-            grasp_result.message,
-        )
-        return "failure"
+            return outcome
+        finally:
+            say_post_grasp_request_once()
 
 
 class FinalDeliverSpeakState(smach.State):

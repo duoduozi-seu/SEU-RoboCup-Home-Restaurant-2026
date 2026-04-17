@@ -55,7 +55,7 @@ class BuildCustomerNavPoseTest(unittest.TestCase):
             math.isclose(_yaw_from_quaternion(pid_pose.pose.orientation), -math.pi / 2.0, rel_tol=0.0, abs_tol=1e-6)
         )
 
-    def test_build_bar_nav_and_pid_poses_should_keep_final_return_pid_orientation_when_requested(self):
+    def test_build_bar_nav_and_pid_poses_should_keep_final_return_nav_and_pid_orientation_when_requested(self):
         start_pose = PoseStamped()
         start_pose.header.frame_id = 'odom'
         start_pose.pose.position.x = 1.0
@@ -64,10 +64,15 @@ class BuildCustomerNavPoseTest(unittest.TestCase):
         start_pose.pose.orientation.z = math.sin(math.pi / 4.0)
         start_pose.pose.orientation.w = math.cos(math.pi / 4.0)
 
-        nav_pose, pid_pose = build_bar_nav_and_pid_poses(start_pose, 1.0, pid_reverse_orientation=False)
+        nav_pose, pid_pose = build_bar_nav_and_pid_poses(
+            start_pose,
+            1.0,
+            pid_reverse_orientation=False,
+            nav_reverse_orientation=False,
+        )
 
         self.assertTrue(
-            math.isclose(_yaw_from_quaternion(nav_pose.pose.orientation), -math.pi / 2.0, rel_tol=0.0, abs_tol=1e-6)
+            math.isclose(_yaw_from_quaternion(nav_pose.pose.orientation), math.pi / 2.0, rel_tol=0.0, abs_tol=1e-6)
         )
         self.assertTrue(
             math.isclose(_yaw_from_quaternion(pid_pose.pose.orientation), math.pi / 2.0, rel_tol=0.0, abs_tol=1e-6)

@@ -47,4 +47,4 @@ PROCESSED_AUDIO_PATH = "denoised_audio.wav"
 #    faster-whisper 推荐填模型目录（snapshot_download / hf download 的目标目录）
 #    当前指向：~/GPSR_ws_zyd/models/faster-whisper-large-v3
 # MODEL_PATH = "/home/duo/GPSR_ws_zyd/models/faster-whisper-large-v3"
-MODEL_PATH = "/home/duo/GPSR_ws_zyd/catkin_robocup_2/src/Restaurant/src/seu_speech_recognition/scripts/large-v3-turbo.pt"
+MODEL_PATH = "/home/duo/GPSR_ws_zyd/catkin_robocup_2/src/Restaurant/src/seu_speech_recognition/scripts/small.en.pt"

@@ -182,7 +182,7 @@ class CaptureBarPoseStateTest(unittest.TestCase):
         )
         self.assertEqual(
             build_bar_mock.call_args_list[1].kwargs,
-            {"pid_reverse_orientation": False},
+            {"pid_reverse_orientation": False, "nav_reverse_orientation": False},
         )
 
 

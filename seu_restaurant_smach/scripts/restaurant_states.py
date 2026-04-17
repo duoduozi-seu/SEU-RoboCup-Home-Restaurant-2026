@@ -47,11 +47,16 @@ def reverse_pose_orientation(pose: PoseStamped) -> PoseStamped:
     return reversed_pose
 
 
-def build_bar_nav_and_pid_poses(start_pose: PoseStamped, extension_distance: float, pid_reverse_orientation: bool = True):
+def build_bar_nav_and_pid_poses(
+    start_pose: PoseStamped,
+    extension_distance: float,
+    pid_reverse_orientation: bool = True,
+    nav_reverse_orientation: bool = True,
+):
     """根据启动位姿生成“回吧台”的导航点和 PID 点。
 
     `pid_pose` 保留原始启动坐标，朝向可按场景选择是否反向；
-    `nav_pose` 沿启动时的原始朝向前推 `extension_distance`，朝向同样反向。
+    `nav_pose` 沿启动时的原始朝向前推 `extension_distance`，朝向可按场景选择是否反向。
     """
     if extension_distance < 0.0:
         raise ValueError("extension_distance must be non-negative")
@@ -63,7 +68,8 @@ def build_bar_nav_and_pid_poses(start_pose: PoseStamped, extension_distance: flo
         start_pose.pose.orientation.w,
     ])[2]
     reversed_yaw = current_yaw + math.pi
-    nav_quaternion = quaternion_from_euler(0.0, 0.0, reversed_yaw)
+    nav_yaw = reversed_yaw if nav_reverse_orientation else current_yaw
+    nav_quaternion = quaternion_from_euler(0.0, 0.0, nav_yaw)
     pid_yaw = reversed_yaw if pid_reverse_orientation else current_yaw
     pid_quaternion = quaternion_from_euler(0.0, 0.0, pid_yaw)
 

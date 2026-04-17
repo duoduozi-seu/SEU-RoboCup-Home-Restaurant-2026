@@ -311,14 +311,12 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
         self.assertIs(sent_goal.nav_pose, nav_pose)
         self.assertIs(sent_goal.pid_pose, pid_pose)
 
-    def test_navigate_back_to_start_pose_should_send_final_bar_nav_and_pid_pose(self):
+    def test_navigate_back_to_start_pose_should_send_final_bar_nav_pose_only(self):
         module = load_module()
         FakeActionClient.next_result = types.SimpleNamespace(success=True)
         final_nav_pose = types.SimpleNamespace(name="final_nav_pose")
-        final_pid_pose = types.SimpleNamespace(name="final_pid_pose")
         userdata = types.SimpleNamespace(
             bar_final_nav_pose_map=final_nav_pose,
-            bar_final_pid_pose_map=final_pid_pose,
         )
 
         outcome = module.NavigateBackToStartPoseState().execute(userdata)
@@ -327,7 +325,7 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
         self.assertEqual(len(FakeActionClient.instances), 1)
         sent_goal = FakeActionClient.instances[0].goals[0]
         self.assertIs(sent_goal.nav_pose, final_nav_pose)
-        self.assertIs(sent_goal.pid_pose, final_pid_pose)
+        self.assertIsNone(sent_goal.pid_pose)
 
     def test_mark_customer_served_and_decide_should_serve_pending_before_rescan(self):
         module = load_module()
