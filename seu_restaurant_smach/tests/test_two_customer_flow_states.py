@@ -3,11 +3,12 @@
 """测试双人服务调度相关的状态逻辑。"""
 
 import importlib.util
+import math
 import sys
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "restaurant_smach.py"
@@ -15,6 +16,12 @@ MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "restaurant_smac
 
 class DummyPoseStamped:
     pass
+
+
+class DummyTwist:
+    def __init__(self):
+        self.linear = types.SimpleNamespace(x=0.0, y=0.0, z=0.0)
+        self.angular = types.SimpleNamespace(x=0.0, y=0.0, z=0.0)
 
 
 class DummyNavGoal:
@@ -92,14 +99,22 @@ def load_module():
     FakeActionClient.instances = []
     FakeActionClient.next_result = None
 
+    def fake_time(*args, **kwargs):
+        del args, kwargs
+        return 0.0
+
+    fake_time.now = lambda: 0.0
+
     fake_rospy = _make_module(
         "rospy",
         wait_for_service=lambda *args, **kwargs: None,
+        Publisher=lambda *args, **kwargs: types.SimpleNamespace(publish=lambda msg: None),
+        Rate=lambda hz: types.SimpleNamespace(sleep=lambda: None),
         ServiceProxy=lambda *args, **kwargs: types.SimpleNamespace(
             call=lambda request: types.SimpleNamespace(state=True, errormsg="")
         ),
         Duration=lambda secs: secs,
-        Time=lambda *args, **kwargs: 0.0,
+        Time=fake_time,
         loginfo=lambda *args, **kwargs: None,
         logwarn=lambda *args, **kwargs: None,
         logerr=lambda *args, **kwargs: None,
@@ -119,7 +134,16 @@ def load_module():
         Buffer=lambda: types.SimpleNamespace(),
         TransformListener=lambda buffer: types.SimpleNamespace(buffer=buffer),
     )
-    fake_geometry_msgs_msg = _make_module("geometry_msgs.msg", PoseStamped=DummyPoseStamped)
+    fake_tf_transformations = _make_module(
+        "tf.transformations",
+        euler_from_quaternion=lambda quaternion: (0.0, 0.0, 0.0),
+    )
+    fake_tf = _make_module("tf", transformations=fake_tf_transformations)
+    fake_geometry_msgs_msg = _make_module(
+        "geometry_msgs.msg",
+        PoseStamped=DummyPoseStamped,
+        Twist=DummyTwist,
+    )
     fake_geometry_msgs = _make_module("geometry_msgs", msg=fake_geometry_msgs_msg)
     fake_restaurant_msgs_msg = _make_module(
         "seu_restaurant_msgs.msg",
@@ -154,6 +178,8 @@ def load_module():
             "smach": fake_smach,
             "smach_ros": fake_smach_ros,
             "actionlib": fake_actionlib,
+            "tf": fake_tf,
+            "tf.transformations": fake_tf_transformations,
             "tf2_ros": fake_tf2_ros,
             "geometry_msgs": fake_geometry_msgs,
             "geometry_msgs.msg": fake_geometry_msgs_msg,
@@ -206,6 +232,7 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
         module.DEBUG = False
         module.CLOSED_SET_ITEM_NAME_LIST = ["cola", "lays"]
         runtime = types.SimpleNamespace(name="runtime")
+        initial_yaw = 0.3
         grasp_result = types.SimpleNamespace(
             success=True,
             status="success",
@@ -214,7 +241,15 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
         )
         userdata = types.SimpleNamespace(orderlist=["Lays."], orderlist_num=[1])
 
-        with patch.object(module, "get_grasp_runtime", return_value=runtime), patch.object(
+        with patch.object(module, "lookup_robot_pose", return_value=types.SimpleNamespace()) as lookup_mock, patch.object(
+            module,
+            "pose_to_yaw",
+            return_value=initial_yaw,
+        ), patch.object(module, "rotate_base_to_relative_yaw") as rotate_mock, patch.object(
+            module,
+            "get_grasp_runtime",
+            return_value=runtime,
+        ), patch.object(
             module,
             "_GRASP_BOTTLE_CLOSED_SET",
             return_value=grasp_result,
@@ -222,39 +257,228 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
             outcome = module.GraspFirstOrderedItemState().execute(userdata)
 
         self.assertEqual(outcome, "success")
+        lookup_mock.assert_called_once_with(timeout_sec=2.0)
         closed_set_mock.assert_called_once_with(
             runtime,
             target_prompt="lays",
-            gdino_prompt="bottle.lays.",
+            gdino_prompt="cola.lays.",
         )
+        rotate_mock.assert_called_once_with(initial_yaw, 0.0)
         grasp_by_category_mock.assert_not_called()
 
-    def test_grasp_first_ordered_item_should_fallback_to_grasp_by_category_for_unknown_item(self):
+    def test_grasp_first_ordered_item_should_retry_second_attempt_at_positive_45_degree(self):
         module = load_module()
         module.DEBUG = False
         module.CLOSED_SET_ITEM_NAME_LIST = ["cola", "lays"]
         runtime = types.SimpleNamespace(name="runtime")
+        initial_yaw = -0.4
+        grasp_result_list = [
+            types.SimpleNamespace(
+                success=False,
+                status="not_found",
+                candidate_index=-1,
+                message="",
+            ),
+            types.SimpleNamespace(
+                success=True,
+                status="success",
+                candidate_index=0,
+                message="",
+            ),
+        ]
+        userdata = types.SimpleNamespace(orderlist=["Cola."], orderlist_num=[1])
+
+        with patch.object(module, "lookup_robot_pose", return_value=types.SimpleNamespace()), patch.object(
+            module,
+            "pose_to_yaw",
+            return_value=initial_yaw,
+        ), patch.object(module, "rotate_base_to_relative_yaw") as rotate_mock, patch.object(
+            module,
+            "get_grasp_runtime",
+            return_value=runtime,
+        ), patch.object(
+            module,
+            "_GRASP_BOTTLE_CLOSED_SET",
+            side_effect=grasp_result_list,
+        ) as closed_set_mock, patch.object(module, "_GRASP_BOTTLE") as grasp_by_category_mock:
+            outcome = module.GraspFirstOrderedItemState().execute(userdata)
+
+        self.assertEqual(outcome, "success")
+        self.assertEqual(
+            closed_set_mock.call_args_list,
+            [
+                call(runtime, target_prompt="cola", gdino_prompt="cola.lays."),
+                call(runtime, target_prompt="cola", gdino_prompt="cola.lays."),
+            ],
+        )
+        self.assertEqual(
+            rotate_mock.call_args_list,
+            [
+                call(initial_yaw, math.radians(45.0)),
+                call(initial_yaw, 0.0),
+            ],
+        )
+        grasp_by_category_mock.assert_not_called()
+
+    def test_grasp_first_ordered_item_should_retry_third_attempt_at_negative_45_degree(self):
+        module = load_module()
+        module.DEBUG = False
+        module.CLOSED_SET_ITEM_NAME_LIST = ["cola", "lays"]
+        runtime = types.SimpleNamespace(name="runtime")
+        initial_yaw = 1.2
+        userdata = types.SimpleNamespace(orderlist=["Cola"], orderlist_num=[1])
+
+        with patch.object(module, "lookup_robot_pose", return_value=types.SimpleNamespace()), patch.object(
+            module,
+            "pose_to_yaw",
+            return_value=initial_yaw,
+        ), patch.object(module, "rotate_base_to_relative_yaw") as rotate_mock, patch.object(
+            module,
+            "get_grasp_runtime",
+            return_value=runtime,
+        ), patch.object(
+            module,
+            "_GRASP_BOTTLE_CLOSED_SET",
+            side_effect=[
+                types.SimpleNamespace(success=False, status="not_found", candidate_index=-1, message=""),
+                types.SimpleNamespace(success=False, status="not_found", candidate_index=-1, message=""),
+                types.SimpleNamespace(success=True, status="success", candidate_index=0, message=""),
+            ],
+        ) as closed_set_mock, patch.object(
+            module,
+            "_GRASP_BOTTLE",
+        ) as grasp_by_category_mock:
+            outcome = module.GraspFirstOrderedItemState().execute(userdata)
+
+        self.assertEqual(outcome, "success")
+        self.assertEqual(
+            closed_set_mock.call_args_list,
+            [
+                call(runtime, target_prompt="cola", gdino_prompt="cola.lays."),
+                call(runtime, target_prompt="cola", gdino_prompt="cola.lays."),
+                call(runtime, target_prompt="cola", gdino_prompt="cola.lays."),
+            ],
+        )
+        self.assertEqual(
+            rotate_mock.call_args_list,
+            [
+                call(initial_yaw, math.radians(45.0)),
+                call(initial_yaw, math.radians(-45.0)),
+                call(initial_yaw, 0.0),
+            ],
+        )
+        grasp_by_category_mock.assert_not_called()
+
+    def test_grasp_first_ordered_item_should_continue_after_three_failures_and_skip_fourth_item(self):
+        module = load_module()
+        module.DEBUG = False
+        module.CLOSED_SET_ITEM_NAME_LIST = ["cola", "lays", "water"]
+        runtime = types.SimpleNamespace(name="runtime")
+        initial_yaw_list = [0.1, 0.2, 0.3]
+        userdata = types.SimpleNamespace(
+            orderlist=["Cola", "Lays", "Water", "Milk"],
+            orderlist_num=[1, 1, 1, 1],
+        )
+
+        with patch.object(
+            module,
+            "lookup_robot_pose",
+            side_effect=[types.SimpleNamespace(), types.SimpleNamespace(), types.SimpleNamespace()],
+        ) as lookup_mock, patch.object(
+            module,
+            "pose_to_yaw",
+            side_effect=initial_yaw_list,
+        ), patch.object(module, "rotate_base_to_relative_yaw") as rotate_mock, patch.object(
+            module,
+            "get_grasp_runtime",
+            return_value=runtime,
+        ), patch.object(
+            module,
+            "_GRASP_BOTTLE_CLOSED_SET",
+            side_effect=[
+                types.SimpleNamespace(success=False, status="failed", candidate_index=-1, message=""),
+                types.SimpleNamespace(success=False, status="failed", candidate_index=-1, message=""),
+                types.SimpleNamespace(success=False, status="failed", candidate_index=-1, message=""),
+                types.SimpleNamespace(success=False, status="failed", candidate_index=-1, message=""),
+                types.SimpleNamespace(success=False, status="failed", candidate_index=-1, message=""),
+                types.SimpleNamespace(success=False, status="failed", candidate_index=-1, message=""),
+                types.SimpleNamespace(success=False, status="failed", candidate_index=-1, message=""),
+                types.SimpleNamespace(success=False, status="failed", candidate_index=-1, message=""),
+                types.SimpleNamespace(success=False, status="failed", candidate_index=-1, message=""),
+            ],
+        ) as closed_set_mock:
+            outcome = module.GraspFirstOrderedItemState().execute(userdata)
+
+        self.assertEqual(outcome, "success")
+        self.assertEqual(lookup_mock.call_count, 3)
+        self.assertEqual(closed_set_mock.call_count, 9)
+        self.assertEqual(
+            [call_args.kwargs["target_prompt"] for call_args in closed_set_mock.call_args_list],
+            ["cola", "cola", "cola", "lays", "lays", "lays", "water", "water", "water"],
+        )
+        self.assertEqual(
+            rotate_mock.call_args_list,
+            [
+                call(0.1, math.radians(45.0)),
+                call(0.1, math.radians(-45.0)),
+                call(0.1, 0.0),
+                call(0.2, math.radians(45.0)),
+                call(0.2, math.radians(-45.0)),
+                call(0.2, 0.0),
+                call(0.3, math.radians(45.0)),
+                call(0.3, math.radians(-45.0)),
+                call(0.3, 0.0),
+            ],
+        )
+
+    def test_grasp_first_ordered_item_should_recover_from_rotation_failure_and_grasp_exception(self):
+        module = load_module()
+        module.DEBUG = False
+        module.CLOSED_SET_ITEM_NAME_LIST = ["cola", "lays"]
+        runtime = types.SimpleNamespace(name="runtime")
+        initial_yaw = -0.8
+        userdata = types.SimpleNamespace(orderlist=["Cola"], orderlist_num=[1])
         grasp_result = types.SimpleNamespace(
             success=True,
             status="success",
             candidate_index=0,
             message="",
         )
-        userdata = types.SimpleNamespace(orderlist=["Chips"], orderlist_num=[1])
 
-        with patch.object(module, "get_grasp_runtime", return_value=runtime), patch.object(
+        with patch.object(module, "lookup_robot_pose", return_value=types.SimpleNamespace()), patch.object(
+            module,
+            "pose_to_yaw",
+            return_value=initial_yaw,
+        ), patch.object(
+            module,
+            "rotate_base_to_relative_yaw",
+            side_effect=[False, True],
+        ) as rotate_mock, patch.object(
+            module,
+            "get_grasp_runtime",
+            return_value=runtime,
+        ), patch.object(
             module,
             "_GRASP_BOTTLE_CLOSED_SET",
-        ) as closed_set_mock, patch.object(
-            module,
-            "_GRASP_BOTTLE",
-            return_value=grasp_result,
-        ) as grasp_by_category_mock:
+            side_effect=[RuntimeError("detect failed"), grasp_result],
+        ) as closed_set_mock:
             outcome = module.GraspFirstOrderedItemState().execute(userdata)
 
         self.assertEqual(outcome, "success")
-        grasp_by_category_mock.assert_called_once_with(runtime, prompt="chips")
-        closed_set_mock.assert_not_called()
+        self.assertEqual(
+            closed_set_mock.call_args_list,
+            [
+                call(runtime, target_prompt="cola", gdino_prompt="cola.lays."),
+                call(runtime, target_prompt="cola", gdino_prompt="cola.lays."),
+            ],
+        )
+        self.assertEqual(
+            rotate_mock.call_args_list,
+            [
+                call(initial_yaw, math.radians(45.0)),
+                call(initial_yaw, 0.0),
+            ],
+        )
 
     def test_find_waving_customers_state_should_store_multiple_points(self):
         module = load_module()

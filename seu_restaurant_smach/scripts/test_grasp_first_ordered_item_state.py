@@ -39,16 +39,16 @@ def main():
     state = restaurant_smach.GraspFirstOrderedItemState()
     normalized_item_name = restaurant_smach.normalize_item_name_for_closed_set(target_item_name)
     closed_set_name_set = restaurant_smach.build_closed_set_item_name_set()
-    expected_route = "closed_set" if normalized_item_name in closed_set_name_set else "grasp_bottle"
+    gdino_prompt = restaurant_smach.build_closed_set_gdino_prompt()
 
     rospy.loginfo(
-        "Start grasp state test | item=%s normalized_item=%s count=%s debug=%s closed_set_items=%s expected_route=%s",
+        "Start grasp state test | item=%s normalized_item=%s count=%s debug=%s closed_set_items=%s gdino_prompt=%s",
         target_item_name,
         normalized_item_name,
         target_item_count,
         debug,
         sorted(closed_set_name_set),
-        expected_route,
+        gdino_prompt,
     )
 
     try:

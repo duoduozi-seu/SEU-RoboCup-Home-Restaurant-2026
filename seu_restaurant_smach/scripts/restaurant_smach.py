@@ -16,16 +16,19 @@
 5. 每服务完一人后，回到吧台初始坐标，并在 PID 阶段恢复初始朝向。
 """
 
+import math
 import sys
+import time
 from pathlib import Path
 
 import actionlib
 import rospy
 import smach
 import smach_ros
+import tf.transformations
 import tf2_ros
 
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Twist
 from seu_restaurant_msgs.msg import (
     AlignAndTakeOrderAction,
     AlignAndTakeOrderGoal,
@@ -55,6 +58,7 @@ VOICE_SERVICE_NAME = "voice_service"
 PIPER_GRIPPER_SERVICE_NAME = "gripper_srv"
 PIPER_GO_ZERO_SERVICE_NAME = "go_zero_srv"
 PIPER_BLOCK_ARM_SERVICE_NAME = "block_arm"
+CMD_VEL_TOPIC = "/cmd_vel"
 
 ODOM_FRAME = "odom"
 ROBOT_BASE_FRAME = "base_link"
@@ -65,7 +69,7 @@ WAVE_TIMEOUT_SEC = 45.0
 WAVE_ANGULAR_SPEED_RAD_S = 0.25
 NAV_TIMEOUT_SEC = 120.0
 STAND_OFF_DISTANCE_M = 1.0
-BAR_NAV_EXTENSION_DISTANCE_M = 1.0
+BAR_NAV_EXTENSION_DISTANCE_M = 0.5
 ALIGN_TIMEOUT_SEC = 20.0
 DIALOG_TIMEOUT_SEC = 5.0
 ORDER_MAX_ROUNDS = 2
@@ -83,6 +87,14 @@ GRASP_CAMERA_SERIAL_NO = ""
 GRASP_CAMERA_VISUAL_PRESET = 5
 GRASP_CAMERA_WARMUP_FRAMES = 30
 CLOSED_SET_ITEM_NAME_LIST = ["cola", "lays", "water", "drink", "milk"]
+
+# 抓取旋转寻找参数
+MAX_GRASP_ITEM_COUNT = 3
+GRASP_RETRY_YAW_OFFSETS_DEG = [0.0, 30.0, -30.0]
+GRASP_RETRY_ANGULAR_SPEED_RAD_S = 0.25
+GRASP_RETRY_YAW_TOLERANCE_RAD = math.radians(2.0)
+GRASP_RETRY_TIMEOUT_SEC = 8.0
+GRASP_ROTATE_CONTROL_HZ = 20.0
 
 # 把 0-9 的数字直接映射成英文单词，方便英文语音模型更稳定地读出来。
 COUNT_WORD_MAP = {
@@ -106,6 +118,7 @@ _GRASP_SHUTDOWN_RUNTIME = None
 _GRASP_BOTTLE = None
 _GRASP_BOTTLE_CLOSED_SET = None
 _PIPER_DELIVER_GET_CONTROLLER = None
+_CMD_VEL_PUBLISHER = None
 
 DEBUG = False
 
@@ -196,14 +209,79 @@ def normalize_item_name_for_closed_set(item_name):
     return str(item_name or "").strip().lower().rstrip(".")
 
 
-def build_closed_set_item_name_set():
-    """从可现场调整的闭集列表中生成标准化类别集合。"""
-    normalized_names = set()
+def build_closed_set_item_name_list():
+    """从可现场调整的闭集列表中生成标准化类别列表，并保留原顺序。"""
+    normalized_names = []
     for item_name in list(CLOSED_SET_ITEM_NAME_LIST or []):
         normalized_name = normalize_item_name_for_closed_set(item_name)
-        if normalized_name:
-            normalized_names.add(normalized_name)
+        if normalized_name and normalized_name not in normalized_names:
+            normalized_names.append(normalized_name)
     return normalized_names
+
+
+def build_closed_set_item_name_set():
+    """从可现场调整的闭集列表中生成标准化类别集合。"""
+    return set(build_closed_set_item_name_list())
+
+
+def build_closed_set_gdino_prompt():
+    """把闭集类别列表拼成 gdino prompt。"""
+    closed_set_item_names = build_closed_set_item_name_list()
+    if not closed_set_item_names:
+        return ""
+    return ".".join(closed_set_item_names) + "."
+
+
+def get_cmd_vel_publisher():
+    """懒加载底盘速度发布器。"""
+    global _CMD_VEL_PUBLISHER
+    if _CMD_VEL_PUBLISHER is None:
+        _CMD_VEL_PUBLISHER = rospy.Publisher(CMD_VEL_TOPIC, Twist, queue_size=1)
+    return _CMD_VEL_PUBLISHER
+
+
+def normalize_angle_rad(angle_rad):
+    """把角度归一化到 [-pi, pi]。"""
+    return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
+
+
+def pose_to_yaw(pose):
+    """从 PoseStamped 中提取平面 yaw。"""
+    quaternion = [
+        pose.pose.orientation.x,
+        pose.pose.orientation.y,
+        pose.pose.orientation.z,
+        pose.pose.orientation.w,
+    ]
+    return tf.transformations.euler_from_quaternion(quaternion)[2]
+
+
+def rotate_base_to_relative_yaw(initial_yaw, relative_yaw_offset_rad):
+    """相对单个物品开始抓取时的初始朝向，原地旋转到底盘目标角。"""
+    target_yaw = normalize_angle_rad(float(initial_yaw) + float(relative_yaw_offset_rad))
+    cmd_vel_publisher = get_cmd_vel_publisher()
+    rate = rospy.Rate(GRASP_ROTATE_CONTROL_HZ)
+    deadline = time.monotonic() + GRASP_RETRY_TIMEOUT_SEC
+
+    try:
+        while True:
+            try:
+                current_yaw = pose_to_yaw(lookup_robot_pose(timeout_sec=0.5))
+            except Exception:
+                return False
+
+            yaw_error = normalize_angle_rad(target_yaw - current_yaw)
+            if abs(yaw_error) <= GRASP_RETRY_YAW_TOLERANCE_RAD:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+
+            twist = Twist()
+            twist.angular.z = math.copysign(GRASP_RETRY_ANGULAR_SPEED_RAD_S, yaw_error)
+            cmd_vel_publisher.publish(twist)
+            rate.sleep()
+    finally:
+        cmd_vel_publisher.publish(Twist())
 
 
 def build_nav_goal_from_pose(pose: PoseStamped, pid_pose: PoseStamped = None) -> RestaurantNavGoal:
@@ -245,23 +323,6 @@ def release_gripper_once(width: float = 0.07, effort: float = 1.0):
     if not controller.set_gripper_width(float(width)):
         raise RuntimeError("piper_grab_v2_global failed to open gripper to width={:.3f}".format(float(width)))
     rospy.loginfo("[DELIVER] gripper released by piper_grab_v2_global")
-
-
-def set_piper_joint_stream_blocked(blocked: bool):
-    """暂停/恢复 piper_ctrl_single_node 从 /joint_states 转发控制，避免覆盖服务命令。"""
-    from std_srvs.srv import SetBool, SetBoolRequest
-
-    rospy.loginfo(
-        "[DELIVER] set %s blocked=%s",
-        PIPER_BLOCK_ARM_SERVICE_NAME,
-        str(bool(blocked)),
-    )
-    request = SetBoolRequest()
-    request.data = bool(blocked)
-    rospy.wait_for_service(PIPER_BLOCK_ARM_SERVICE_NAME, timeout=2.0)
-    response = rospy.ServiceProxy(PIPER_BLOCK_ARM_SERVICE_NAME, SetBool).call(request)
-    if not response.success and bool(blocked):
-        raise RuntimeError("piper block_arm failed: {}".format(response.message))
 
 
 def move_arm_go_zero_once(is_mit_mode: bool = False):
@@ -608,7 +669,7 @@ class SpeakOrderAtBarState(smach.State):
 
 
 class GraspFirstOrderedItemState(smach.State):
-    """只抓取订单列表中的第一个物品，并按闭集列表选择抓取入口。"""
+    """兼容旧类名；按订单顺序尝试闭集抓取前三个物品。"""
 
     def __init__(self):
         smach.State.__init__(
@@ -618,84 +679,65 @@ class GraspFirstOrderedItemState(smach.State):
         )
 
     def execute(self, userdata):
-        CATEGORY = GRASP_CATEGORY
-        CLOSED_SET_GDINO_PROMPT = "bottle.lays."
-
         orderlist = list(getattr(userdata, "orderlist", []) or [])
-        orderlist_num = list(getattr(userdata, "orderlist_num", []) or [])
-        outcome = "failure"
+        target_item_name_list = []
+        for raw_target_item_name in orderlist[:MAX_GRASP_ITEM_COUNT]:
+            target_item_name = normalize_item_name_for_closed_set(raw_target_item_name)
+            if target_item_name:
+                target_item_name_list.append(target_item_name)
 
         try:
-            if not orderlist:
-                rospy.logwarn("Grasp skipped: orderlist is empty.")
-                return outcome
+            if not target_item_name_list:
+                return "success"
 
-            raw_target_item_name = str(orderlist[0]).strip()
-            target_item_name = normalize_item_name_for_closed_set(raw_target_item_name)
-            target_item_count = orderlist_num[0] if orderlist_num else 1
-            if not target_item_name:
-                rospy.logwarn("Grasp skipped: first ordered item is empty.")
-                return outcome
+            gdino_prompt = build_closed_set_gdino_prompt()
+            if not gdino_prompt:
+                for target_item_name in target_item_name_list:
+                    rospy.logwarn("Closed-set grasp failed: %s", target_item_name)
+                return "success"
 
-            closed_set_item_names = build_closed_set_item_name_set()
-            use_closed_set = target_item_name in closed_set_item_names
-            grasp_route = "closed_set" if use_closed_set else "grasp_bottle"
-            bottle_prompt = CLOSED_SET_GDINO_PROMPT if use_closed_set else target_item_name
+            runtime = get_grasp_runtime()
+            for target_item_name in target_item_name_list:
+                initial_yaw = None
+                try:
+                    initial_pose = lookup_robot_pose(timeout_sec=2.0)
+                    initial_yaw = pose_to_yaw(initial_pose)
 
-            rospy.loginfo(
-                "Grasp first ordered item once | route=%s category=%s item=%s normalized_item=%s requested_count=%s gdino_prompt=%s",
-                grasp_route,
-                CATEGORY,
-                raw_target_item_name,
-                target_item_name,
-                str(target_item_count),
-                bottle_prompt,
-            )
+                    for offset_deg in GRASP_RETRY_YAW_OFFSETS_DEG:
+                        if offset_deg != 0.0:
+                            try:
+                                rotate_base_to_relative_yaw(initial_yaw, math.radians(offset_deg))
+                            except Exception:
+                                pass
 
-            try:
-                runtime = get_grasp_runtime()
-                if use_closed_set:
-                    grasp_result = _GRASP_BOTTLE_CLOSED_SET(
-                        runtime,
-                        target_prompt=target_item_name,
-                        gdino_prompt=CLOSED_SET_GDINO_PROMPT,
-                    )
-                else:
-                    grasp_result = _GRASP_BOTTLE(
-                        runtime,
-                        prompt=bottle_prompt,
-                    )
-            except Exception as exc:
-                rospy.logerr(
-                    "Grasp phase exception | route=%s category=%s item=%s error=%s",
-                    grasp_route,
-                    CATEGORY,
-                    target_item_name,
-                    str(exc),
-                )
-                return outcome
+                        try:
+                            grasp_result = _GRASP_BOTTLE_CLOSED_SET(
+                                runtime,
+                                target_prompt=target_item_name,
+                                gdino_prompt=gdino_prompt,
+                            )
+                        except Exception:
+                            rospy.logwarn("Closed-set grasp failed: %s", target_item_name)
+                            continue
 
-            if grasp_result.success:
-                rospy.loginfo(
-                    "Grasp succeeded | route=%s item=%s status=%s candidate_index=%s",
-                    grasp_route,
-                    target_item_name,
-                    grasp_result.status,
-                    str(grasp_result.candidate_index),
-                )
-                outcome = "success"
-                return outcome
+                        if getattr(grasp_result, "success", False):
+                            break
 
-            rospy.logwarn(
-                "Grasp failed | route=%s item=%s status=%s message=%s",
-                grasp_route,
-                target_item_name,
-                grasp_result.status,
-                grasp_result.message,
-            )
-            return outcome
+                        rospy.logwarn("Closed-set grasp failed: %s", target_item_name)
+                except Exception:
+                    rospy.logwarn("Closed-set grasp failed: %s", target_item_name)
+                finally:
+                    if initial_yaw is not None:
+                        try:
+                            rotate_base_to_relative_yaw(initial_yaw, 0.0)
+                        except Exception:
+                            pass
+        except Exception:
+            rospy.logwarn("Closed-set grasp failed.")
         finally:
             say_post_grasp_request_once()
+
+        return "success"
 
 
 class FinalDeliverSpeakState(smach.State):

@@ -17,6 +17,12 @@ class DummyPoseStamped:
     pass
 
 
+class DummyTwist:
+    def __init__(self):
+        self.linear = types.SimpleNamespace(x=0.0, y=0.0, z=0.0)
+        self.angular = types.SimpleNamespace(x=0.0, y=0.0, z=0.0)
+
+
 class DummyNavGoal:
     TARGET_MODE_POSE = 2
     TARGET_MODE_NAME = 1
@@ -88,14 +94,23 @@ def _make_module(name, **attrs):
 
 def load_module():
     FakeActionClient.instances = []
+
+    def fake_time(*args, **kwargs):
+        del args, kwargs
+        return 0.0
+
+    fake_time.now = lambda: 0.0
+
     fake_rospy = _make_module(
         "rospy",
         wait_for_service=lambda *args, **kwargs: None,
+        Publisher=lambda *args, **kwargs: types.SimpleNamespace(publish=lambda msg: None),
+        Rate=lambda hz: types.SimpleNamespace(sleep=lambda: None),
         ServiceProxy=lambda *args, **kwargs: types.SimpleNamespace(
             call=lambda request: types.SimpleNamespace(state=True, errormsg="")
         ),
         Duration=lambda secs: secs,
-        Time=lambda *args, **kwargs: 0.0,
+        Time=fake_time,
         loginfo=lambda *args, **kwargs: None,
         logwarn=lambda *args, **kwargs: None,
         logerr=lambda *args, **kwargs: None,
@@ -115,7 +130,16 @@ def load_module():
         Buffer=lambda: types.SimpleNamespace(),
         TransformListener=lambda buffer: types.SimpleNamespace(buffer=buffer),
     )
-    fake_geometry_msgs_msg = _make_module("geometry_msgs.msg", PoseStamped=DummyPoseStamped)
+    fake_tf_transformations = _make_module(
+        "tf.transformations",
+        euler_from_quaternion=lambda quaternion: (0.0, 0.0, 0.0),
+    )
+    fake_tf = _make_module("tf", transformations=fake_tf_transformations)
+    fake_geometry_msgs_msg = _make_module(
+        "geometry_msgs.msg",
+        PoseStamped=DummyPoseStamped,
+        Twist=DummyTwist,
+    )
     fake_geometry_msgs = _make_module("geometry_msgs", msg=fake_geometry_msgs_msg)
     fake_restaurant_msgs_msg = _make_module(
         "seu_restaurant_msgs.msg",
@@ -150,6 +174,8 @@ def load_module():
             "smach": fake_smach,
             "smach_ros": fake_smach_ros,
             "actionlib": fake_actionlib,
+            "tf": fake_tf,
+            "tf.transformations": fake_tf_transformations,
             "tf2_ros": fake_tf2_ros,
             "geometry_msgs": fake_geometry_msgs,
             "geometry_msgs.msg": fake_geometry_msgs_msg,
