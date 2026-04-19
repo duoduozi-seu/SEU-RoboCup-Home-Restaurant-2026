@@ -35,6 +35,7 @@ MARKER_NS = "restaurant_wave_target"
 DEFAULT_CAMERA_FRAME = "camera1_color_optical_frame"
 DEFAULT_RATE_HZ = 10.0
 CAMERA_BACKWARD_BIAS_M = -0.60
+SAME_PERSON_DISTANCE_M = 0.40
 
 
 def camera_point_to_base_link_point(camera_point):
@@ -116,6 +117,44 @@ def build_target_marker_array(person_points_map):
     for marker_id, person_point_map in enumerate(person_points_map or []):
         marker_array.markers.append(build_target_marker(person_point_map, marker_id=marker_id))
     return marker_array
+
+
+def deduplicate_nearby_candidates(candidates, same_person_distance_m=SAME_PERSON_DISTANCE_M, max_count=2):
+    """按 odom 平面距离去重，40cm 内认作同一个人。
+
+    规则：
+    1. 先按稳定深度从近到远排序；
+    2. 若当前点与已保留点的平面距离不超过阈值，则跳过；
+    3. 这样同一个人在整圈扫描里即便产生多个 track，也只保留一个代表点。
+    """
+    unique_candidates = []
+    distance_threshold_sq = float(same_person_distance_m) * float(same_person_distance_m)
+
+    for candidate in sorted(candidates or [], key=lambda item: float(item.get("depth_m", float("inf")))):
+        person_point_map = candidate.get("person_point_map")
+        if person_point_map is None:
+            continue
+
+        is_same_person = False
+        for unique_candidate in unique_candidates:
+            unique_point = unique_candidate.get("person_point_map")
+            if unique_point is None:
+                continue
+            delta_x = float(person_point_map.x) - float(unique_point.x)
+            delta_y = float(person_point_map.y) - float(unique_point.y)
+            planar_distance_sq = delta_x * delta_x + delta_y * delta_y
+            if planar_distance_sq <= distance_threshold_sq:
+                is_same_person = True
+                break
+
+        if is_same_person:
+            continue
+
+        unique_candidates.append(candidate)
+        if len(unique_candidates) >= max(0, int(max_count)):
+            break
+
+    return unique_candidates
 
 
 class FindWavingCustomerActionServer:
@@ -276,10 +315,11 @@ class FindWavingCustomerActionServer:
                 rate.sleep()
 
             self._stop_robot()
-            best_candidates = sorted(
+            best_candidates = deduplicate_nearby_candidates(
                 best_candidates_by_track.values(),
-                key=lambda item: float(item["depth_m"]),
-            )[:2]
+                same_person_distance_m=SAME_PERSON_DISTANCE_M,
+                max_count=2,
+            )
 
             if not best_candidates:
                 self._publish_target_markers([])

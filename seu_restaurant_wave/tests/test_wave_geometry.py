@@ -26,6 +26,7 @@ from find_waving_customer_action_server import (
     build_target_marker_array,
     build_target_marker,
     camera_point_to_base_link_point,
+    deduplicate_nearby_candidates,
 )
 from wave_detector_core import (
     render_debug_image,
@@ -164,6 +165,33 @@ class WaveGeometryTest(unittest.TestCase):
         self.assertEqual(marker_array.markers[0].id, 0)
         self.assertEqual(marker_array.markers[1].id, 1)
         self.assertEqual(marker_array.markers[1].pose.position.x, 2.1)
+
+    def test_deduplicate_nearby_candidates_merges_people_within_forty_cm(self):
+        """40cm 内的多个点应认作同一个人，只保留最近代表。"""
+        candidates = [
+            {"track_id": 1, "depth_m": 1.1, "person_point_map": type("PointLike", (), {"x": 1.0, "y": 2.0, "z": 0.0})()},
+            {"track_id": 2, "depth_m": 1.3, "person_point_map": type("PointLike", (), {"x": 1.25, "y": 2.15, "z": 0.0})()},
+            {"track_id": 3, "depth_m": 1.6, "person_point_map": type("PointLike", (), {"x": 2.0, "y": 2.0, "z": 0.0})()},
+        ]
+
+        unique_candidates = deduplicate_nearby_candidates(candidates, same_person_distance_m=0.4, max_count=2)
+
+        self.assertEqual(len(unique_candidates), 2)
+        self.assertEqual(unique_candidates[0]["track_id"], 1)
+        self.assertEqual(unique_candidates[1]["track_id"], 3)
+
+    def test_deduplicate_nearby_candidates_keeps_people_beyond_forty_cm(self):
+        """超过 40cm 的人应保留为不同目标。"""
+        candidates = [
+            {"track_id": 1, "depth_m": 1.1, "person_point_map": type("PointLike", (), {"x": 1.0, "y": 2.0, "z": 0.0})()},
+            {"track_id": 2, "depth_m": 1.2, "person_point_map": type("PointLike", (), {"x": 1.41, "y": 2.0, "z": 0.0})()},
+        ]
+
+        unique_candidates = deduplicate_nearby_candidates(candidates, same_person_distance_m=0.4, max_count=2)
+
+        self.assertEqual(len(unique_candidates), 2)
+        self.assertEqual(unique_candidates[0]["track_id"], 1)
+        self.assertEqual(unique_candidates[1]["track_id"], 2)
 
     def test_build_delete_marker_clears_previous_marker(self):
         """没有目标时，应发布 DELETE marker 清理 RViz 中的旧点。"""

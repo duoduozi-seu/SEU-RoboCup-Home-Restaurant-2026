@@ -119,6 +119,8 @@ def load_module():
         logwarn=lambda *args, **kwargs: None,
         logerr=lambda *args, **kwargs: None,
         init_node=lambda *args, **kwargs: None,
+        sleep=lambda *args, **kwargs: None,
+        is_shutdown=lambda: False,
     )
     fake_smach = _make_module("smach", State=FakeState, StateMachine=FakeStateMachine)
     fake_smach_ros = _make_module(
@@ -302,6 +304,7 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
         module.DEBUG = False
         module.CLOSED_SET_ITEM_NAME_LIST = ["cola", "lays"]
         runtime = types.SimpleNamespace(name="runtime")
+        initial_pose = types.SimpleNamespace(name="initial_pose")
         initial_yaw = 0.3
         grasp_result = types.SimpleNamespace(
             success=True,
@@ -311,11 +314,15 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
         )
         userdata = types.SimpleNamespace(orderlist=["Lays."], orderlist_num=[1])
 
-        with patch.object(module, "lookup_robot_pose", return_value=types.SimpleNamespace()) as lookup_mock, patch.object(
+        with patch.object(module, "lookup_robot_pose", return_value=initial_pose) as lookup_mock, patch.object(
             module,
             "pose_to_yaw",
             return_value=initial_yaw,
         ), patch.object(module, "rotate_base_to_relative_yaw") as rotate_mock, patch.object(
+            module,
+            "move_base_to_reference_forward_offset",
+            return_value=True,
+        ) as linear_move_mock, patch.object(
             module,
             "get_grasp_runtime",
             return_value=runtime,
@@ -323,7 +330,11 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
             module,
             "_GRASP_BOTTLE_CLOSED_SET",
             return_value=grasp_result,
-        ) as closed_set_mock, patch.object(module, "_GRASP_BOTTLE") as grasp_by_category_mock:
+        ) as closed_set_mock, patch.object(
+            module,
+            "drive_base_backward_after_grasp",
+            return_value=True,
+        ), patch.object(module, "_GRASP_BOTTLE") as grasp_by_category_mock:
             outcome = module.GraspFirstOrderedItemState().execute(userdata)
 
         self.assertEqual(outcome, "success")
@@ -334,20 +345,30 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
             gdino_prompt="cola.lays.",
         )
         rotate_mock.assert_called_once_with(initial_yaw, 0.0)
+        linear_move_mock.assert_called_once_with(
+            initial_pose,
+            0.0,
+            linear_speed_m_s=module.GRASP_RETRY_LINEAR_SPEED_M_S,
+            tolerance_m=module.GRASP_RETRY_LINEAR_TOLERANCE_M,
+            control_hz=module.GRASP_RETRY_LINEAR_CONTROL_HZ,
+            stage_label="grasp_retry_restore",
+        )
         grasp_by_category_mock.assert_not_called()
 
-    def test_grasp_first_ordered_item_should_retry_second_attempt_at_positive_45_degree(self):
+    def test_grasp_first_ordered_item_should_rotate_for_no_match_then_retry(self):
         module = load_module()
         module.DEBUG = False
         module.CLOSED_SET_ITEM_NAME_LIST = ["cola", "lays"]
         runtime = types.SimpleNamespace(name="runtime")
+        initial_pose = types.SimpleNamespace(name="initial_pose")
         initial_yaw = -0.4
         grasp_result_list = [
             types.SimpleNamespace(
                 success=False,
-                status="not_found",
+                status="failed",
                 candidate_index=-1,
                 message="",
+                detect_result={"status": "closed_set_no_match"},
             ),
             types.SimpleNamespace(
                 success=True,
@@ -358,11 +379,15 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
         ]
         userdata = types.SimpleNamespace(orderlist=["Cola."], orderlist_num=[1])
 
-        with patch.object(module, "lookup_robot_pose", return_value=types.SimpleNamespace()), patch.object(
+        with patch.object(module, "lookup_robot_pose", return_value=initial_pose), patch.object(
             module,
             "pose_to_yaw",
             return_value=initial_yaw,
         ), patch.object(module, "rotate_base_to_relative_yaw") as rotate_mock, patch.object(
+            module,
+            "move_base_to_reference_forward_offset",
+            return_value=True,
+        ) as linear_move_mock, patch.object(
             module,
             "get_grasp_runtime",
             return_value=runtime,
@@ -370,7 +395,11 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
             module,
             "_GRASP_BOTTLE_CLOSED_SET",
             side_effect=grasp_result_list,
-        ) as closed_set_mock, patch.object(module, "_GRASP_BOTTLE") as grasp_by_category_mock:
+        ) as closed_set_mock, patch.object(
+            module,
+            "drive_base_backward_after_grasp",
+            return_value=True,
+        ), patch.object(module, "_GRASP_BOTTLE") as grasp_by_category_mock:
             outcome = module.GraspFirstOrderedItemState().execute(userdata)
 
         self.assertEqual(outcome, "success")
@@ -384,25 +413,38 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
         self.assertEqual(
             rotate_mock.call_args_list,
             [
-                call(initial_yaw, math.radians(45.0)),
+                call(initial_yaw, math.radians(15.0)),
                 call(initial_yaw, 0.0),
             ],
         )
+        linear_move_mock.assert_called_once_with(
+            initial_pose,
+            0.0,
+            linear_speed_m_s=module.GRASP_RETRY_LINEAR_SPEED_M_S,
+            tolerance_m=module.GRASP_RETRY_LINEAR_TOLERANCE_M,
+            control_hz=module.GRASP_RETRY_LINEAR_CONTROL_HZ,
+            stage_label="grasp_retry_restore",
+        )
         grasp_by_category_mock.assert_not_called()
 
-    def test_grasp_first_ordered_item_should_retry_third_attempt_at_negative_45_degree(self):
+    def test_grasp_first_ordered_item_should_rotate_to_negative_15_degree_for_third_no_match_retry(self):
         module = load_module()
         module.DEBUG = False
         module.CLOSED_SET_ITEM_NAME_LIST = ["cola", "lays"]
         runtime = types.SimpleNamespace(name="runtime")
+        initial_pose = types.SimpleNamespace(name="initial_pose")
         initial_yaw = 1.2
         userdata = types.SimpleNamespace(orderlist=["Cola"], orderlist_num=[1])
 
-        with patch.object(module, "lookup_robot_pose", return_value=types.SimpleNamespace()), patch.object(
+        with patch.object(module, "lookup_robot_pose", return_value=initial_pose), patch.object(
             module,
             "pose_to_yaw",
             return_value=initial_yaw,
         ), patch.object(module, "rotate_base_to_relative_yaw") as rotate_mock, patch.object(
+            module,
+            "move_base_to_reference_forward_offset",
+            return_value=True,
+        ) as linear_move_mock, patch.object(
             module,
             "get_grasp_runtime",
             return_value=runtime,
@@ -410,11 +452,27 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
             module,
             "_GRASP_BOTTLE_CLOSED_SET",
             side_effect=[
-                types.SimpleNamespace(success=False, status="not_found", candidate_index=-1, message=""),
-                types.SimpleNamespace(success=False, status="not_found", candidate_index=-1, message=""),
+                types.SimpleNamespace(
+                    success=False,
+                    status="failed",
+                    candidate_index=-1,
+                    message="",
+                    detect_result={"status": "closed_set_no_match"},
+                ),
+                types.SimpleNamespace(
+                    success=False,
+                    status="failed",
+                    candidate_index=-1,
+                    message="",
+                    detect_result={"status": "closed_set_no_match"},
+                ),
                 types.SimpleNamespace(success=True, status="success", candidate_index=0, message=""),
             ],
         ) as closed_set_mock, patch.object(
+            module,
+            "drive_base_backward_after_grasp",
+            return_value=True,
+        ), patch.object(
             module,
             "_GRASP_BOTTLE",
         ) as grasp_by_category_mock:
@@ -432,18 +490,31 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
         self.assertEqual(
             rotate_mock.call_args_list,
             [
-                call(initial_yaw, math.radians(45.0)),
-                call(initial_yaw, math.radians(-45.0)),
+                call(initial_yaw, math.radians(15.0)),
+                call(initial_yaw, math.radians(-15.0)),
                 call(initial_yaw, 0.0),
             ],
         )
+        linear_move_mock.assert_called_once_with(
+            initial_pose,
+            0.0,
+            linear_speed_m_s=module.GRASP_RETRY_LINEAR_SPEED_M_S,
+            tolerance_m=module.GRASP_RETRY_LINEAR_TOLERANCE_M,
+            control_hz=module.GRASP_RETRY_LINEAR_CONTROL_HZ,
+            stage_label="grasp_retry_restore",
+        )
         grasp_by_category_mock.assert_not_called()
 
-    def test_grasp_first_ordered_item_should_continue_after_three_failures_and_skip_fourth_item(self):
+    def test_grasp_first_ordered_item_should_use_linear_retries_for_grasp_errors(self):
         module = load_module()
         module.DEBUG = False
         module.CLOSED_SET_ITEM_NAME_LIST = ["cola", "lays", "water"]
         runtime = types.SimpleNamespace(name="runtime")
+        initial_pose_list = [
+            types.SimpleNamespace(name="pose_1"),
+            types.SimpleNamespace(name="pose_2"),
+            types.SimpleNamespace(name="pose_3"),
+        ]
         initial_yaw_list = [0.1, 0.2, 0.3]
         userdata = types.SimpleNamespace(
             orderlist=["Cola", "Lays", "Water", "Milk"],
@@ -453,12 +524,16 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
         with patch.object(
             module,
             "lookup_robot_pose",
-            side_effect=[types.SimpleNamespace(), types.SimpleNamespace(), types.SimpleNamespace()],
+            side_effect=initial_pose_list,
         ) as lookup_mock, patch.object(
             module,
             "pose_to_yaw",
             side_effect=initial_yaw_list,
         ), patch.object(module, "rotate_base_to_relative_yaw") as rotate_mock, patch.object(
+            module,
+            "move_base_to_reference_forward_offset",
+            return_value=True,
+        ) as linear_move_mock, patch.object(
             module,
             "get_grasp_runtime",
             return_value=runtime,
@@ -476,7 +551,11 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
                 types.SimpleNamespace(success=False, status="failed", candidate_index=-1, message=""),
                 types.SimpleNamespace(success=False, status="failed", candidate_index=-1, message=""),
             ],
-        ) as closed_set_mock:
+        ) as closed_set_mock, patch.object(
+            module,
+            "drive_base_backward_after_grasp",
+            return_value=True,
+        ):
             outcome = module.GraspFirstOrderedItemState().execute(userdata)
 
         self.assertEqual(outcome, "success")
@@ -489,23 +568,95 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
         self.assertEqual(
             rotate_mock.call_args_list,
             [
-                call(0.1, math.radians(45.0)),
-                call(0.1, math.radians(-45.0)),
                 call(0.1, 0.0),
-                call(0.2, math.radians(45.0)),
-                call(0.2, math.radians(-45.0)),
                 call(0.2, 0.0),
-                call(0.3, math.radians(45.0)),
-                call(0.3, math.radians(-45.0)),
                 call(0.3, 0.0),
             ],
         )
+        self.assertEqual(
+            linear_move_mock.call_args_list,
+            [
+                call(
+                    initial_pose_list[0],
+                    -0.15,
+                    linear_speed_m_s=module.GRASP_RETRY_LINEAR_SPEED_M_S,
+                    tolerance_m=module.GRASP_RETRY_LINEAR_TOLERANCE_M,
+                    control_hz=module.GRASP_RETRY_LINEAR_CONTROL_HZ,
+                    stage_label="grasp_retry_linear",
+                ),
+                call(
+                    initial_pose_list[0],
+                    0.05,
+                    linear_speed_m_s=module.GRASP_RETRY_LINEAR_SPEED_M_S,
+                    tolerance_m=module.GRASP_RETRY_LINEAR_TOLERANCE_M,
+                    control_hz=module.GRASP_RETRY_LINEAR_CONTROL_HZ,
+                    stage_label="grasp_retry_linear",
+                ),
+                call(
+                    initial_pose_list[0],
+                    0.0,
+                    linear_speed_m_s=module.GRASP_RETRY_LINEAR_SPEED_M_S,
+                    tolerance_m=module.GRASP_RETRY_LINEAR_TOLERANCE_M,
+                    control_hz=module.GRASP_RETRY_LINEAR_CONTROL_HZ,
+                    stage_label="grasp_retry_restore",
+                ),
+                call(
+                    initial_pose_list[1],
+                    -0.15,
+                    linear_speed_m_s=module.GRASP_RETRY_LINEAR_SPEED_M_S,
+                    tolerance_m=module.GRASP_RETRY_LINEAR_TOLERANCE_M,
+                    control_hz=module.GRASP_RETRY_LINEAR_CONTROL_HZ,
+                    stage_label="grasp_retry_linear",
+                ),
+                call(
+                    initial_pose_list[1],
+                    0.05,
+                    linear_speed_m_s=module.GRASP_RETRY_LINEAR_SPEED_M_S,
+                    tolerance_m=module.GRASP_RETRY_LINEAR_TOLERANCE_M,
+                    control_hz=module.GRASP_RETRY_LINEAR_CONTROL_HZ,
+                    stage_label="grasp_retry_linear",
+                ),
+                call(
+                    initial_pose_list[1],
+                    0.0,
+                    linear_speed_m_s=module.GRASP_RETRY_LINEAR_SPEED_M_S,
+                    tolerance_m=module.GRASP_RETRY_LINEAR_TOLERANCE_M,
+                    control_hz=module.GRASP_RETRY_LINEAR_CONTROL_HZ,
+                    stage_label="grasp_retry_restore",
+                ),
+                call(
+                    initial_pose_list[2],
+                    -0.15,
+                    linear_speed_m_s=module.GRASP_RETRY_LINEAR_SPEED_M_S,
+                    tolerance_m=module.GRASP_RETRY_LINEAR_TOLERANCE_M,
+                    control_hz=module.GRASP_RETRY_LINEAR_CONTROL_HZ,
+                    stage_label="grasp_retry_linear",
+                ),
+                call(
+                    initial_pose_list[2],
+                    0.05,
+                    linear_speed_m_s=module.GRASP_RETRY_LINEAR_SPEED_M_S,
+                    tolerance_m=module.GRASP_RETRY_LINEAR_TOLERANCE_M,
+                    control_hz=module.GRASP_RETRY_LINEAR_CONTROL_HZ,
+                    stage_label="grasp_retry_linear",
+                ),
+                call(
+                    initial_pose_list[2],
+                    0.0,
+                    linear_speed_m_s=module.GRASP_RETRY_LINEAR_SPEED_M_S,
+                    tolerance_m=module.GRASP_RETRY_LINEAR_TOLERANCE_M,
+                    control_hz=module.GRASP_RETRY_LINEAR_CONTROL_HZ,
+                    stage_label="grasp_retry_restore",
+                ),
+            ],
+        )
 
-    def test_grasp_first_ordered_item_should_recover_from_rotation_failure_and_grasp_exception(self):
+    def test_grasp_first_ordered_item_should_use_linear_retry_for_grasp_exception(self):
         module = load_module()
         module.DEBUG = False
         module.CLOSED_SET_ITEM_NAME_LIST = ["cola", "lays"]
         runtime = types.SimpleNamespace(name="runtime")
+        initial_pose = types.SimpleNamespace(name="initial_pose")
         initial_yaw = -0.8
         userdata = types.SimpleNamespace(orderlist=["Cola"], orderlist_num=[1])
         grasp_result = types.SimpleNamespace(
@@ -515,15 +666,18 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
             message="",
         )
 
-        with patch.object(module, "lookup_robot_pose", return_value=types.SimpleNamespace()), patch.object(
+        with patch.object(module, "lookup_robot_pose", return_value=initial_pose), patch.object(
             module,
             "pose_to_yaw",
             return_value=initial_yaw,
         ), patch.object(
             module,
             "rotate_base_to_relative_yaw",
-            side_effect=[False, True],
         ) as rotate_mock, patch.object(
+            module,
+            "move_base_to_reference_forward_offset",
+            return_value=True,
+        ) as linear_move_mock, patch.object(
             module,
             "get_grasp_runtime",
             return_value=runtime,
@@ -531,7 +685,11 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
             module,
             "_GRASP_BOTTLE_CLOSED_SET",
             side_effect=[RuntimeError("detect failed"), grasp_result],
-        ) as closed_set_mock:
+        ) as closed_set_mock, patch.object(
+            module,
+            "drive_base_backward_after_grasp",
+            return_value=True,
+        ):
             outcome = module.GraspFirstOrderedItemState().execute(userdata)
 
         self.assertEqual(outcome, "success")
@@ -545,9 +703,51 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
         self.assertEqual(
             rotate_mock.call_args_list,
             [
-                call(initial_yaw, math.radians(45.0)),
                 call(initial_yaw, 0.0),
             ],
+        )
+        self.assertEqual(
+            linear_move_mock.call_args_list,
+            [
+                call(
+                    initial_pose,
+                    -0.15,
+                    linear_speed_m_s=module.GRASP_RETRY_LINEAR_SPEED_M_S,
+                    tolerance_m=module.GRASP_RETRY_LINEAR_TOLERANCE_M,
+                    control_hz=module.GRASP_RETRY_LINEAR_CONTROL_HZ,
+                    stage_label="grasp_retry_linear",
+                ),
+                call(
+                    initial_pose,
+                    0.0,
+                    linear_speed_m_s=module.GRASP_RETRY_LINEAR_SPEED_M_S,
+                    tolerance_m=module.GRASP_RETRY_LINEAR_TOLERANCE_M,
+                    control_hz=module.GRASP_RETRY_LINEAR_CONTROL_HZ,
+                    stage_label="grasp_retry_restore",
+                ),
+            ],
+        )
+
+    def test_drive_base_backward_after_grasp_should_use_tf_closed_loop_helper(self):
+        module = load_module()
+        reference_pose = types.SimpleNamespace(name="reference_pose")
+
+        with patch.object(module, "lookup_robot_pose", return_value=reference_pose) as lookup_mock, patch.object(
+            module,
+            "move_base_to_reference_forward_offset",
+            return_value=True,
+        ) as move_mock:
+            result = module.drive_base_backward_after_grasp()
+
+        self.assertTrue(result)
+        lookup_mock.assert_called_once_with(timeout_sec=2.0)
+        move_mock.assert_called_once_with(
+            reference_pose,
+            -float(module.GRASP_BACKOFF_DISTANCE_M),
+            linear_speed_m_s=module.GRASP_BACKOFF_SPEED_M_S,
+            tolerance_m=module.GRASP_BACKOFF_TOLERANCE_M,
+            control_hz=module.GRASP_BACKOFF_CONTROL_HZ,
+            stage_label="grasp_backoff",
         )
 
     def test_find_waving_customers_state_should_store_multiple_points(self):

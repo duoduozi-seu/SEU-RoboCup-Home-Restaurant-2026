@@ -17,11 +17,11 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # POSE_MODEL_PATH = os.path.join(os.path.dirname(SCRIPT_DIR), "models", "yolo26m-pose.pt")
 POSE_MODEL_PATH = '/home/duo/GPSR_ws_zyd/res_demo/yolo26m-pose.pt'
 
-FRAME_WIDTH = 848
-FRAME_HEIGHT = 480
+FRAME_WIDTH = 1280
+FRAME_HEIGHT = 720
 FRAME_FPS = 30
 WAVE_CAMERA_SERIAL_NO = "346122072691"
-POSE_IMGSZ = 960
+POSE_IMGSZ = 1280
 POSE_CONF = 0.35
 POSE_IOU = 0.45
 KEYPOINT_VISIBILITY = 0.35

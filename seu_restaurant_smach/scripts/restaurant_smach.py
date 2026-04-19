@@ -102,10 +102,19 @@ GRASP_RETRY_ANGULAR_SPEED_RAD_S = 0.25
 GRASP_RETRY_YAW_TOLERANCE_RAD = math.radians(2.0)
 GRASP_RETRY_TIMEOUT_SEC = 8.0
 GRASP_ROTATE_CONTROL_HZ = 20.0
-#抓取倒退常量
+# 抓取重试前后位移参数。
+GRASP_RETRY_LINEAR_TARGET_OFFSETS_M = [0.0, -0.15, 0.05]
+GRASP_RETRY_LINEAR_SPEED_M_S = 0.10
+GRASP_RETRY_LINEAR_TOLERANCE_M = 0.01
+GRASP_RETRY_LINEAR_CONTROL_HZ = 20.0
+# 抓取结束后的统一倒退参数。
 GRASP_BACKOFF_DISTANCE_M = 0.5
-GRASP_BACKOFF_SPEED_M_S = 1.0
+GRASP_BACKOFF_SPEED_M_S = 0.5
 GRASP_BACKOFF_CONTROL_HZ = 20.0
+GRASP_BACKOFF_TOLERANCE_M = 0.01
+
+CLOSED_SET_FAILURE_KIND_NO_MATCH = "no_match"
+CLOSED_SET_FAILURE_KIND_GRASP_ERROR = "grasp_error"
 
 # 下面 5 组是本任务里写死的机械臂关节常量，后续现场联调只改这里。
 # 现有托盘位姿 1：托盘上方的中转位。放入托盘和从托盘取出时都先到这里。
@@ -323,6 +332,14 @@ def get_cmd_vel_publisher():
     return _CMD_VEL_PUBLISHER
 
 
+def stop_base_motion():
+    """统一发送零速，避免底盘残留速度。"""
+    cmd_vel_publisher = get_cmd_vel_publisher()
+    for _ in range(3):
+        cmd_vel_publisher.publish(Twist())
+        rospy.sleep(0.03)
+
+
 def normalize_angle_rad(angle_rad):
     """把角度归一化到 [-pi, pi]。"""
     return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
@@ -364,26 +381,133 @@ def rotate_base_to_relative_yaw(initial_yaw, relative_yaw_offset_rad):
             cmd_vel_publisher.publish(twist)
             rate.sleep()
     finally:
-        cmd_vel_publisher.publish(Twist())
+        stop_base_motion()
 
 
-def drive_base_backward_after_grasp():
-    """抓取状态结束前，按固定速度短距离后退给后续动作留空间。"""
-    if GRASP_BACKOFF_DISTANCE_M <= 0.0 or GRASP_BACKOFF_SPEED_M_S <= 0.0:
-        return
+def project_pose_forward_offset(reference_pose, current_pose):
+    """把当前位置投影到参考位姿朝向上，返回 base_link 前进方向位移。"""
+    reference_x = float(reference_pose.pose.position.x)
+    reference_y = float(reference_pose.pose.position.y)
+    reference_yaw = pose_to_yaw(reference_pose)
+    current_x = float(current_pose.pose.position.x)
+    current_y = float(current_pose.pose.position.y)
+    dx = current_x - reference_x
+    dy = current_y - reference_y
+    return dx * math.cos(reference_yaw) + dy * math.sin(reference_yaw)
 
+
+def move_base_to_reference_forward_offset(
+    reference_pose,
+    target_forward_offset_m,
+    *,
+    linear_speed_m_s,
+    tolerance_m,
+    control_hz,
+    stage_label,
+):
+    """基于 odom/tf 闭环，把底盘移动到参考位姿前向投影的目标偏移位置。"""
+    if reference_pose is None:
+        return False
+
+    speed_m_s = abs(float(linear_speed_m_s))
+    if speed_m_s <= 0.0:
+        return False
+
+    target_offset_m = float(target_forward_offset_m)
     cmd_vel_publisher = get_cmd_vel_publisher()
-    rate = rospy.Rate(GRASP_BACKOFF_CONTROL_HZ)
-    deadline = time.monotonic() + (GRASP_BACKOFF_DISTANCE_M / GRASP_BACKOFF_SPEED_M_S)
+    rate = rospy.Rate(float(control_hz))
 
     try:
-        while time.monotonic() < deadline and not rospy.is_shutdown():
+        current_pose = lookup_robot_pose(timeout_sec=0.5)
+    except Exception:
+        rospy.logwarn("[%s] current odom pose unavailable before base move", stage_label)
+        return False
+
+    initial_error = target_offset_m - project_pose_forward_offset(reference_pose, current_pose)
+    deadline = time.monotonic() + max(2.0, abs(initial_error) / speed_m_s + 2.0)
+
+    try:
+        while not rospy.is_shutdown():
+            if time.monotonic() >= deadline:
+                rospy.logwarn("[%s] timeout while moving base to forward offset %.3fm", stage_label, target_offset_m)
+                return False
+
+            try:
+                current_pose = lookup_robot_pose(timeout_sec=0.5)
+            except Exception:
+                rospy.logwarn("[%s] waiting odom/tf during base move...", stage_label)
+                rate.sleep()
+                continue
+
+            current_offset = project_pose_forward_offset(reference_pose, current_pose)
+            forward_error = target_offset_m - current_offset
+            if abs(forward_error) <= float(tolerance_m):
+                return True
+
             twist = Twist()
-            twist.linear.x = -GRASP_BACKOFF_SPEED_M_S
+            twist.linear.x = math.copysign(speed_m_s, forward_error)
             cmd_vel_publisher.publish(twist)
             rate.sleep()
     finally:
-        cmd_vel_publisher.publish(Twist())
+        stop_base_motion()
+
+
+def extract_closed_set_grasp_failure_kind(grasp_result):
+    """把闭集抓取失败最小分成 no_match 和 grasp_error。"""
+    if getattr(grasp_result, "success", False):
+        return ""
+
+    result_status = str(getattr(grasp_result, "status", "") or "").strip().lower()
+    detect_result = getattr(grasp_result, "detect_result", None)
+    detect_status = ""
+    if isinstance(detect_result, dict):
+        detect_status = str(detect_result.get("status", "") or "").strip().lower()
+
+    if result_status == "closed_set_no_match" or detect_status == "closed_set_no_match":
+        return CLOSED_SET_FAILURE_KIND_NO_MATCH
+    return CLOSED_SET_FAILURE_KIND_GRASP_ERROR
+
+
+def log_closed_set_grasp_failure(target_item_name, failure_kind, grasp_result=None, exc=None):
+    """统一打印闭集抓取失败类型，方便现场看日志。"""
+    detect_status = ""
+    message = ""
+    if grasp_result is not None:
+        detect_result = getattr(grasp_result, "detect_result", None)
+        if isinstance(detect_result, dict):
+            detect_status = str(detect_result.get("status", "") or "").strip()
+        message = str(getattr(grasp_result, "message", "") or "").strip()
+    if exc is not None:
+        message = str(exc)
+
+    rospy.logwarn(
+        "Closed-set grasp failed | item=%s kind=%s detect_status=%s message=%s",
+        target_item_name,
+        failure_kind or "unknown",
+        detect_status,
+        message,
+    )
+
+
+def drive_base_backward_after_grasp():
+    """抓取状态结束前，按 odom/tf 闭环短距离后退给后续动作留空间。"""
+    if GRASP_BACKOFF_DISTANCE_M <= 0.0 or GRASP_BACKOFF_SPEED_M_S <= 0.0:
+        return False
+
+    try:
+        reference_pose = lookup_robot_pose(timeout_sec=2.0)
+    except Exception as exc:
+        rospy.logwarn("Grasp backoff skipped: failed to get odom/tf pose: %s", str(exc))
+        return False
+
+    return move_base_to_reference_forward_offset(
+        reference_pose,
+        -float(GRASP_BACKOFF_DISTANCE_M),
+        linear_speed_m_s=GRASP_BACKOFF_SPEED_M_S,
+        tolerance_m=GRASP_BACKOFF_TOLERANCE_M,
+        control_hz=GRASP_BACKOFF_CONTROL_HZ,
+        stage_label="grasp_backoff",
+    )
 
 
 def build_nav_goal_from_pose(pose: PoseStamped, pid_pose: PoseStamped = None) -> RestaurantNavGoal:
@@ -935,40 +1059,108 @@ class GraspFirstOrderedItemState(smach.State):
             runtime = get_grasp_runtime()
             successful_grasp_count = 0
             for target_item_name in target_item_name_list:
+                initial_pose = None
                 initial_yaw = None
                 item_grasp_success = False
-                try:
-                    initial_pose = lookup_robot_pose(timeout_sec=2.0)
-                    initial_yaw = pose_to_yaw(initial_pose)
+                first_failure_kind = ""
 
-                    for offset_deg in GRASP_RETRY_YAW_OFFSETS_DEG:
-                        if offset_deg != 0.0:
+                def run_closed_set_grasp_attempt():
+                    try:
+                        grasp_result = _GRASP_BOTTLE_CLOSED_SET(
+                            runtime,
+                            target_prompt=target_item_name,
+                            gdino_prompt=gdino_prompt,
+                        )
+                    except Exception as exc:
+                        failure_kind = CLOSED_SET_FAILURE_KIND_GRASP_ERROR
+                        log_closed_set_grasp_failure(
+                            target_item_name,
+                            failure_kind,
+                            grasp_result=None,
+                            exc=exc,
+                        )
+                        return False, failure_kind
+
+                    if getattr(grasp_result, "success", False):
+                        return True, ""
+
+                    failure_kind = extract_closed_set_grasp_failure_kind(grasp_result)
+                    log_closed_set_grasp_failure(
+                        target_item_name,
+                        failure_kind,
+                        grasp_result=grasp_result,
+                    )
+                    return False, failure_kind
+
+                try:
+                    try:
+                        initial_pose = lookup_robot_pose(timeout_sec=2.0)
+                        initial_yaw = pose_to_yaw(initial_pose)
+                    except Exception as exc:
+                        rospy.logwarn(
+                            "Failed to capture initial base pose before grasp retry | item=%s error=%s",
+                            target_item_name,
+                            str(exc),
+                        )
+                        initial_pose = None
+                        initial_yaw = None
+
+                    item_grasp_success, first_failure_kind = run_closed_set_grasp_attempt()
+                    if item_grasp_success:
+                        pass
+                    elif first_failure_kind == CLOSED_SET_FAILURE_KIND_NO_MATCH and initial_yaw is not None:
+                        for offset_deg in GRASP_RETRY_YAW_OFFSETS_DEG[1:]:
                             try:
                                 rotate_base_to_relative_yaw(initial_yaw, math.radians(offset_deg))
                             except Exception:
                                 pass
 
-                        try:
-                            grasp_result = _GRASP_BOTTLE_CLOSED_SET(
-                                runtime,
-                                target_prompt=target_item_name,
-                                gdino_prompt=gdino_prompt,
-                            )
-                        except Exception:
-                            rospy.logwarn("Closed-set grasp failed: %s", target_item_name)
-                            continue
+                            item_grasp_success, _ = run_closed_set_grasp_attempt()
+                            if item_grasp_success:
+                                break
+                    elif (
+                        first_failure_kind == CLOSED_SET_FAILURE_KIND_GRASP_ERROR
+                        and initial_pose is not None
+                    ):
+                        for target_offset_m in GRASP_RETRY_LINEAR_TARGET_OFFSETS_M[1:]:
+                            try:
+                                move_base_to_reference_forward_offset(
+                                    initial_pose,
+                                    float(target_offset_m),
+                                    linear_speed_m_s=GRASP_RETRY_LINEAR_SPEED_M_S,
+                                    tolerance_m=GRASP_RETRY_LINEAR_TOLERANCE_M,
+                                    control_hz=GRASP_RETRY_LINEAR_CONTROL_HZ,
+                                    stage_label="grasp_retry_linear",
+                                )
+                            except Exception:
+                                pass
 
-                        if getattr(grasp_result, "success", False):
-                            item_grasp_success = True
-                            break
-
-                        rospy.logwarn("Closed-set grasp failed: %s", target_item_name)
-                except Exception:
-                    rospy.logwarn("Closed-set grasp failed: %s", target_item_name)
+                            item_grasp_success, _ = run_closed_set_grasp_attempt()
+                            if item_grasp_success:
+                                break
+                except Exception as exc:
+                    log_closed_set_grasp_failure(
+                        target_item_name,
+                        first_failure_kind or CLOSED_SET_FAILURE_KIND_GRASP_ERROR,
+                        grasp_result=None,
+                        exc=exc,
+                    )
                 finally:
                     if initial_yaw is not None:
                         try:
                             rotate_base_to_relative_yaw(initial_yaw, 0.0)
+                        except Exception:
+                            pass
+                    if initial_pose is not None:
+                        try:
+                            move_base_to_reference_forward_offset(
+                                initial_pose,
+                                0.0,
+                                linear_speed_m_s=GRASP_RETRY_LINEAR_SPEED_M_S,
+                                tolerance_m=GRASP_RETRY_LINEAR_TOLERANCE_M,
+                                control_hz=GRASP_RETRY_LINEAR_CONTROL_HZ,
+                                stage_label="grasp_retry_restore",
+                            )
                         except Exception:
                             pass
 
