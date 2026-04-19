@@ -195,6 +195,7 @@ class AlignAndTakeOrderStateOrderListTest(unittest.TestCase):
 
     def test_execute_should_copy_order_fields_to_userdata(self):
         module = load_module()
+        module.CLOSED_SET_ITEM_NAME_LIST = [" Cola ", "lays", "water", "drink.", "milk", "lays"]
         FakeActionClient.next_result = types.SimpleNamespace(
             success=True,
             service_pose_map=types.SimpleNamespace(name="service_pose"),
@@ -214,6 +215,10 @@ class AlignAndTakeOrderStateOrderListTest(unittest.TestCase):
         self.assertEqual(userdata.orderlist_num, [2, 1])
         self.assertEqual(len(FakeActionClient.instances), 1)
         self.assertEqual(FakeActionClient.instances[0].goal.dialog_timeout_sec, 5.0)
+        self.assertEqual(
+            FakeActionClient.instances[0].goal.closed_set_item_name_list,
+            ["cola", "lays", "water", "drink", "milk"],
+        )
 
 
 if __name__ == "__main__":

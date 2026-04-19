@@ -41,6 +41,7 @@ class DummyAlignAndTakeOrderResult:
 class DummyParseRestaurantOrderGoal:
     def __init__(self):
         self.order_text = ""
+        self.closed_set_item_name_list = []
 
 
 class FakeLlmActionClient:
@@ -265,6 +266,28 @@ class AlignAndTakeOrderLlmFlowTest(unittest.TestCase):
         self.assertEqual(server.server.succeeded_result.orderlist, ['cola', 'chips'])
         self.assertEqual(server.server.succeeded_result.orderlist_num, [2, 1])
         self.assertEqual(server.server.succeeded_result.rounds_used, 2)
+
+    def test_execute_cb_should_forward_closed_set_item_names_to_llm_goal(self):
+        """interaction 应把上游闭集名单原样透传给 LLM goal。"""
+        FakeLlmActionClient.planned_results = [
+            types.SimpleNamespace(success=True, error_msg='', items=['lays_1', 'drink_2']),
+        ]
+        server = self.build_server(['order text', 'yes'])
+        goal = types.SimpleNamespace(
+            ask_text='ask',
+            max_rounds=1,
+            align_timeout_sec=1.0,
+            dialog_timeout_sec=1.0,
+            closed_set_item_name_list=['cola', 'lays', 'water', 'drink', 'milk'],
+        )
+
+        server.execute_cb(goal)
+
+        self.assertTrue(FakeLlmActionClient.created_clients)
+        self.assertEqual(
+            FakeLlmActionClient.created_clients[0].goal_list[0].closed_set_item_name_list,
+            ['cola', 'lays', 'water', 'drink', 'milk'],
+        )
 
     def test_execute_cb_should_abort_when_llm_returns_invalid_item_count_list(self):
         """LLM 成功但返回非法 item_count 列表时，应直接失败退出。"""

@@ -1,5 +1,6 @@
 # Goal
 string order_text
+string[] closed_set_item_name_list
 ---
 # Result
 bool success

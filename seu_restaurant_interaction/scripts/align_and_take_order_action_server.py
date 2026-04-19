@@ -421,6 +421,9 @@ class AlignAndTakeOrderActionServer:
                 # 顾客确认原句后，再交给 LLM 做订单物品抽取。
                 llm_goal = ParseRestaurantOrderGoal()
                 llm_goal.order_text = order_text
+                llm_goal.closed_set_item_name_list = list(
+                    getattr(goal, "closed_set_item_name_list", []) or []
+                )
                 llm_client.send_goal(llm_goal)
                 llm_client.wait_for_result()
                 llm_result = llm_client.get_result()

@@ -3,6 +3,7 @@ string ask_text
 uint8 max_rounds
 float32 align_timeout_sec
 float32 dialog_timeout_sec
+string[] closed_set_item_name_list
 ---
 # Result
 bool success

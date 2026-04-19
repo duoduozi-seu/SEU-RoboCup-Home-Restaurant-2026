@@ -860,6 +860,7 @@ class AlignAndTakeOrderState(smach.State):
             max_rounds=ORDER_MAX_ROUNDS,
             align_timeout_sec=ALIGN_TIMEOUT_SEC,
             dialog_timeout_sec=DIALOG_TIMEOUT_SEC,
+            closed_set_item_name_list=build_closed_set_item_name_list(),
         )
         client.send_goal(goal)
         client.wait_for_result()

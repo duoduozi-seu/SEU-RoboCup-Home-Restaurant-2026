@@ -79,14 +79,78 @@ Your previous answer did not follow the required format.
 Regenerate and output only one JSON array of strings in the format "item_name_count"."""
 
 
-def build_order_parse_prompt(order_text, retry_hint_text=""):
+def normalize_closed_set_item_name(item_name):
+    """把闭集物品名整理成稳定的标准格式。"""
+    return normalize_single_item_text(item_name).rstrip(".")
+
+
+def build_closed_set_item_name_list(closed_set_item_name_list):
+    """把上游透传的闭集物品名列表标准化并去重。"""
+    normalized_names = []
+    for item_name in list(closed_set_item_name_list or []):
+        normalized_name = normalize_closed_set_item_name(item_name)
+        if normalized_name and normalized_name not in normalized_names:
+            normalized_names.append(normalized_name)
+    return normalized_names
+
+
+def build_closed_set_prompt_text(closed_set_item_name_list):
+    """把闭集约束拼成 prompt 段落。"""
+    normalized_names = build_closed_set_item_name_list(closed_set_item_name_list)
+    if not normalized_names:
+        return ""
+
+    return """[Closed-set canonical item names]
+Canonical closed-set item names: {}
+If the intended item is one of the closed-set item names above, you must output exactly the canonical name from that list.
+Do not output plural, variant, or paraphrased forms for closed-set items. Example: drinks -> drink.
+If an ASR or homophone mistake most likely refers to a closed-set item, correct it to the most likely closed-set canonical name. Example: lace -> lays.
+If the intended item is not in the closed set, keep the original open-set item phrase as usual.""".format(
+        json.dumps(normalized_names)
+    )
+
+
+def coerce_item_name_to_closed_set(item_name, closed_set_item_name_set=None):
+    """只对闭集项做精确回落，不扩展开放集映射。"""
+    if not item_name:
+        return ""
+
+    clean_item_name = normalize_single_item_text(item_name)
+    if not clean_item_name or not closed_set_item_name_set:
+        return clean_item_name
+
+    if clean_item_name in closed_set_item_name_set:
+        return clean_item_name
+
+    singular_candidate = ""
+    if len(clean_item_name) > 1 and clean_item_name.endswith("s"):
+        singular_candidate = clean_item_name[:-1]
+    if singular_candidate in closed_set_item_name_set:
+        return singular_candidate
+
+    return clean_item_name
+
+
+def build_order_parse_prompt(order_text, retry_hint_text="", closed_set_item_name_list=None):
     """把规则、few-shot 和当前用户句子拼成一次完整 prompt。"""
     # 先放规则，保证模型一开始就知道只能输出 JSON 数组。
     prompt = ORDER_PARSE_RULE_PROMPT
     prompt += "\n\n"
 
+    closed_set_prompt_text = build_closed_set_prompt_text(closed_set_item_name_list)
+    if closed_set_prompt_text:
+        prompt += closed_set_prompt_text
+        prompt += "\n\n"
+
     # 再给 few-shot，让模型看到我们希望的输入输出样式。
     prompt += ORDER_PARSE_FEW_SHOT_PROMPT
+    if closed_set_prompt_text:
+        prompt += "\n\n"
+        prompt += """Customer: please give me two drinks and one lays
+Output: ["drink_2", "lays_1"]
+
+Customer: i want lace and a bottle of water
+Output: ["lays_1", "water_1"]"""
     prompt += "\n\n"
 
     # 最后放当前顾客的真实句子，避免它把示例内容混进结果里。
@@ -136,7 +200,7 @@ def normalize_single_item_text(item_text):
     return clean_text
 
 
-def parse_item_count_entry(item_text):
+def parse_item_count_entry(item_text, closed_set_item_name_set=None):
     """把模型输出的单个元素解析成 `(item_name, count)`。"""
     if not isinstance(item_text, str):
         return "", 0
@@ -158,19 +222,21 @@ def parse_item_count_entry(item_text):
 
     if not item_name or item_count <= 0:
         return "", 0
+    item_name = coerce_item_name_to_closed_set(item_name, closed_set_item_name_set)
     return item_name, item_count
 
 
-def normalize_model_output_items(item_list):
+def normalize_model_output_items(item_list, closed_set_item_name_list=None):
     """清洗模型返回的列表，并合并成稳定的 `item_count` 结果。"""
     if not isinstance(item_list, list):
         return []
 
+    closed_set_item_name_set = set(build_closed_set_item_name_list(closed_set_item_name_list))
     ordered_item_names = []
     item_count_map = {}
 
     for item in item_list:
-        item_name, item_count = parse_item_count_entry(item)
+        item_name, item_count = parse_item_count_entry(item, closed_set_item_name_set)
         if not item_name:
             continue
         if item_name not in item_count_map:
@@ -181,7 +247,7 @@ def normalize_model_output_items(item_list):
     return ["{}_{}".format(item_name, item_count_map[item_name]) for item_name in ordered_item_names]
 
 
-def parse_item_list_from_model_text(model_text):
+def parse_item_list_from_model_text(model_text, closed_set_item_name_list=None):
     """把模型输出文本解析成最终的物品列表。"""
     # 先从整段文本里截出数组，再做 JSON 解析。
     json_array_text = extract_first_json_array_text(model_text)
@@ -194,10 +260,16 @@ def parse_item_list_from_model_text(model_text):
         return []
 
     # 最后再做一次 Python 端的轻量清洗。
-    return normalize_model_output_items(parsed_data)
+    return normalize_model_output_items(parsed_data, closed_set_item_name_list)
 
 
-def parse_order_items_with_llm(order_text, api_core, model_name=GEMINI_MODEL, max_retry_times=MAX_RETRY_TIMES):
+def parse_order_items_with_llm(
+    order_text,
+    api_core,
+    model_name=GEMINI_MODEL,
+    max_retry_times=MAX_RETRY_TIMES,
+    closed_set_item_name_list=None,
+):
     """调用 LLM 解析订单，并返回统一结构。
 
     返回：
@@ -214,7 +286,11 @@ def parse_order_items_with_llm(order_text, api_core, model_name=GEMINI_MODEL, ma
 
     for _ in range(max_retry_times):
         # 每一轮都用当前 retry 提示重新拼完整 prompt。
-        prompt_text = build_order_parse_prompt(order_text, retry_hint_text)
+        prompt_text = build_order_parse_prompt(
+            order_text,
+            retry_hint_text=retry_hint_text,
+            closed_set_item_name_list=closed_set_item_name_list,
+        )
         api_result = api_core.generate_content(prompt_text, model_name)
 
         # 如果 HTTP 或接口层失败，直接记录错误并继续重试。
@@ -235,7 +311,10 @@ def parse_order_items_with_llm(order_text, api_core, model_name=GEMINI_MODEL, ma
                 return False, [], "no_info"
 
         # 如果接口成功，就尝试从模型文本里提取 JSON 数组。
-        items = parse_item_list_from_model_text(api_result["text"])
+        items = parse_item_list_from_model_text(
+            api_result["text"],
+            closed_set_item_name_list=closed_set_item_name_list,
+        )
         if items:
             return True, items, ""
 
@@ -277,6 +356,7 @@ class RestaurantOrderLlmActionServer:
     def execute_cb(self, goal):
         """接收一句订单文本，调用 LLM 后返回物品列表。"""
         order_text = goal.order_text.strip()
+        closed_set_item_name_list = list(getattr(goal, "closed_set_item_name_list", []) or [])
         rospy.loginfo("[restaurant_order_llm] received order text: %s", order_text)
 
         # 如果上游在真正执行前就取消了目标，这里直接按 preempt 返回。
@@ -286,7 +366,11 @@ class RestaurantOrderLlmActionServer:
             return
 
         # 真正的订单解析逻辑集中在纯函数里，方便单独做单元测试。
-        success, items, error_msg = parse_order_items_with_llm(order_text, self.api_core)
+        success, items, error_msg = parse_order_items_with_llm(
+            order_text,
+            self.api_core,
+            closed_set_item_name_list=closed_set_item_name_list,
+        )
         result = self.build_result_message(success, error_msg, items)
 
         if success:
