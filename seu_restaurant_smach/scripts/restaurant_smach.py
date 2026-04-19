@@ -90,19 +90,23 @@ GRASP_CAMERA_WARMUP_FRAMES = 30
 CLOSED_SET_ITEM_NAME_LIST = ["cola", "lays", "water", "drink", "milk"]
 
 # 抓取旋转寻找参数
-# 餐厅任务现在只允许一次最多抓 2 件“实际物品”，不是 2 个名称。
-MAX_GRASP_ITEM_COUNT = 2
+# 餐厅任务现在只允许一次最多抓 3 件“实际物品”，不是 3 个名称。
+MAX_GRASP_ITEM_COUNT = 3
 GRASP_RETRY_YAW_OFFSETS_DEG = [0.0, 15.0, -15.0]
 GRASP_RETRY_ANGULAR_SPEED_RAD_S = 0.25
 GRASP_RETRY_YAW_TOLERANCE_RAD = math.radians(2.0)
 GRASP_RETRY_TIMEOUT_SEC = 8.0
 GRASP_ROTATE_CONTROL_HZ = 20.0
 
-# 下面 3 组是本任务里写死的机械臂关节常量，后续现场联调只改这里。
-# 位姿 1：抓到第一件物品后，把物品移到托盘上方并松开。
+# 下面 5 组是本任务里写死的机械臂关节常量，后续现场联调只改这里。
+# 现有托盘位姿 1：托盘上方的中转位。放入托盘和从托盘取出时都先到这里。
 TRAY_ABOVE_JOINTS_RAD = [-1.608, 1.211, -1.021, 0.00, 1.205, -1.537]
-# 位姿 2：最终送餐时，从托盘中向下取出第一件物品。
+# 现有托盘位姿 2：托盘的落放/取件位。放入托盘和从托盘取出都用这个点。
 TRAY_PICK_JOINTS_RAD = [-1.605, 1.609, -0.624, 0.0, 0.684, -1.538]
+# 新增托盘位姿 1：另一个托盘上方的中转位。具体数值由现场联调后填写。
+TRAY_ABOVE_JOINTS_RAD_OTHER = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+# 新增托盘位姿 2：另一个托盘的落放/取件位。具体数值由现场联调后填写。
+TRAY_PICK_JOINTS_RAD_OTHER = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 # 位姿 3：最终把物品伸到顾客面前，再松开夹爪。
 DELIVER_EXTEND_JOINTS_RAD = [0.0, 1.491, -0.942, 0.0, -0.549, 0.0]
 
@@ -410,6 +414,105 @@ def move_arm_go_zero_once(is_mit_mode: bool = False, controller=None):
         str(bool(is_mit_mode)),
     )
     move_arm_to_named_pose_once("zero", controller=controller)
+
+
+def count_delivery_item_count_from_order_num(orderlist_num):
+    """交付阶段只按数量列表求总件数，并截断到本任务允许的最大值。"""
+    total_item_count = 0
+    for raw_item_count in list(orderlist_num or []):
+        try:
+            item_count = int(raw_item_count)
+        except (TypeError, ValueError):
+            continue
+        total_item_count += max(0, item_count)
+        if total_item_count >= MAX_GRASP_ITEM_COUNT:
+            return MAX_GRASP_ITEM_COUNT
+    return total_item_count
+
+
+def get_post_grasp_storage_target(target_item_count, successful_grasp_count):
+    """根据本轮目标总件数和当前成功抓取序号，决定这件物品放哪里。"""
+    capped_target_count = max(0, min(int(target_item_count), MAX_GRASP_ITEM_COUNT))
+    if successful_grasp_count < 1 or successful_grasp_count > capped_target_count:
+        return "skip"
+    if capped_target_count <= 1:
+        return "gripper"
+    if capped_target_count == 2:
+        return "main_tray" if successful_grasp_count == 1 else "gripper"
+    if successful_grasp_count == 1:
+        return "main_tray"
+    if successful_grasp_count == 2:
+        return "other_tray"
+    return "gripper"
+
+
+def place_item_on_tray_once(tray_above_joints_rad, tray_pick_joints_rad, description_prefix, controller=None):
+    """把当前夹爪里拿着的物品放入指定托盘，然后回到 zero。"""
+    controller = get_piper_deliver_controller() if controller is None else controller
+    prefix = str(description_prefix or "tray")
+    # 放托盘固定序列：位姿1 -> 位姿2 -> 松夹爪 -> 位姿1 -> zero。
+    move_arm_to_joint_positions_once(
+        tray_above_joints_rad,
+        description="{}_pose1_before_place".format(prefix),
+        controller=controller,
+    )
+    move_arm_to_joint_positions_once(
+        tray_pick_joints_rad,
+        description="{}_pose2_place_down".format(prefix),
+        controller=controller,
+    )
+    release_gripper_once(controller=controller)
+    move_arm_to_joint_positions_once(
+        tray_above_joints_rad,
+        description="{}_pose1_after_place".format(prefix),
+        controller=controller,
+    )
+    move_arm_go_zero_once(controller=controller)
+
+
+def deliver_item_from_tray_once(tray_above_joints_rad, tray_pick_joints_rad, description_prefix, controller=None):
+    """从指定托盘取出一件物品并送到顾客面前。"""
+    controller = get_piper_deliver_controller() if controller is None else controller
+    prefix = str(description_prefix or "tray")
+    # 从托盘取出固定序列：位姿1 -> 张开夹爪 -> 位姿2 -> 闭夹爪 -> 位姿1 -> 位姿3 -> 松夹爪。
+    move_arm_to_joint_positions_once(
+        tray_above_joints_rad,
+        description="{}_pose1_before_pick".format(prefix),
+        controller=controller,
+    )
+    release_gripper_once(controller=controller)
+    move_arm_to_joint_positions_once(
+        tray_pick_joints_rad,
+        description="{}_pose2_pick_down".format(prefix),
+        controller=controller,
+    )
+    set_gripper_width_once(GRIPPER_CLOSE_WIDTH_M, controller=controller)
+    move_arm_to_joint_positions_once(
+        tray_above_joints_rad,
+        description="{}_pose1_after_pick".format(prefix),
+        controller=controller,
+    )
+    move_arm_to_joint_positions_once(
+        DELIVER_EXTEND_JOINTS_RAD,
+        description="{}_pose3_deliver".format(prefix),
+        controller=controller,
+    )
+    release_gripper_once(controller=controller)
+    rospy.sleep(1.0)
+
+
+def deliver_item_from_gripper_once(controller=None):
+    """直接把当前夹爪里拿着的物品送给顾客，然后回到 zero。"""
+    controller = get_piper_deliver_controller() if controller is None else controller
+    # 夹爪直送固定序列：位姿3 -> 松夹爪 -> zero。
+    move_arm_to_joint_positions_once(
+        DELIVER_EXTEND_JOINTS_RAD,
+        description="gripper_direct_pose3_deliver",
+        controller=controller,
+    )
+    release_gripper_once(controller=controller)
+    rospy.sleep(1.0)
+    move_arm_go_zero_once(controller=controller)
 
 
 def convert_count_to_spoken_word(item_count):
@@ -743,39 +846,21 @@ class SpeakOrderAtBarState(smach.State):
             return "failure"
 
 
-class ResetCarryFlagsState(smach.State):
-    """每服务一位顾客前，先清空“托盘里/夹爪里是否有物品”的内部标记。"""
-
-    def __init__(self):
-        smach.State.__init__(
-            self,
-            outcomes=["success"],
-            output_keys=["tray_has_item", "gripper_has_item"],
-        )
-
-    def execute(self, userdata):
-        userdata.tray_has_item = False
-        userdata.gripper_has_item = False
-        return "success"
-
-
 class GraspFirstOrderedItemState(smach.State):
-    """兼容旧类名；按实际件数顺序尝试闭集抓取最多两个物品。"""
+    """兼容旧类名；按实际件数顺序尝试闭集抓取最多三个物品。"""
 
     def __init__(self):
         smach.State.__init__(
             self,
             outcomes=["success", "failure"],
             input_keys=["orderlist", "orderlist_num"],
-            output_keys=["tray_has_item", "gripper_has_item"],
         )
 
     def execute(self, userdata):
         orderlist = list(getattr(userdata, "orderlist", []) or [])
         orderlist_num = list(getattr(userdata, "orderlist_num", []) or [])
         target_item_name_list = build_target_item_name_list_from_order(orderlist, orderlist_num)
-        tray_has_item = False
-        gripper_has_item = False
+        target_item_count = len(target_item_name_list)
 
         try:
             if not target_item_name_list:
@@ -831,38 +916,34 @@ class GraspFirstOrderedItemState(smach.State):
                     continue
 
                 successful_grasp_count += 1
+                storage_target = get_post_grasp_storage_target(target_item_count, successful_grasp_count)
 
-                # 重点逻辑：
-                # 第一件“成功抓到”的物品必须先放到托盘上。
-                # 如果托盘放置失败，就认为物品还留在夹爪里，并且不再继续抓第二件。
-                if successful_grasp_count == 1:
-                    try:
-                        move_arm_to_joint_positions_once(
-                            TRAY_ABOVE_JOINTS_RAD,
-                            description="tray_above_after_first_grasp",
-                            controller=runtime.controller,
-                        )
-                        release_gripper_once(controller=runtime.controller)
-                        tray_has_item = True
-                        gripper_has_item = False
-                    except Exception as exc:
-                        rospy.logwarn(
-                            "First grasped item failed to place on tray, keep it in gripper: %s",
-                            str(exc),
-                        )
-                        tray_has_item = False
-                        gripper_has_item = True
-                        break
+                # 这次任务不再维护“夹爪/托盘是否有物品”的内部标记，
+                # 只按本轮目标总件数把成功抓到的物品落到固定位置。
+                if storage_target == "main_tray":
+                    place_item_on_tray_once(
+                        TRAY_ABOVE_JOINTS_RAD,
+                        TRAY_PICK_JOINTS_RAD,
+                        description_prefix="main_tray",
+                        controller=runtime.controller,
+                    )
                     continue
 
-                # 第二件成功抓到的物品不再过托盘，直接保留在夹爪里带去交付。
-                gripper_has_item = True
-                break
-        except Exception:
-            rospy.logwarn("Closed-set grasp failed.")
+                if storage_target == "other_tray":
+                    place_item_on_tray_once(
+                        TRAY_ABOVE_JOINTS_RAD_OTHER,
+                        TRAY_PICK_JOINTS_RAD_OTHER,
+                        description_prefix="other_tray",
+                        controller=runtime.controller,
+                    )
+                    continue
+
+                # 需要直接交付给顾客的那一件保留在夹爪里即可。
+                if storage_target == "gripper":
+                    break
+        except Exception as exc:
+            rospy.logwarn("Closed-set grasp failed: %s", str(exc))
         finally:
-            userdata.tray_has_item = bool(tray_has_item)
-            userdata.gripper_has_item = bool(gripper_has_item)
             say_post_grasp_request_once()
 
         return "success"
@@ -875,55 +956,42 @@ class FinalDeliverSpeakState(smach.State):
         smach.State.__init__(
             self,
             outcomes=["success", "failure"],
-            input_keys=["tray_has_item", "gripper_has_item"],
-            output_keys=["tray_has_item", "gripper_has_item"],
+            input_keys=["orderlist_num"],
         )
 
     def execute(self, userdata):
         try:
             say_once(FINAL_DELIVER_TEXT)
             controller = get_piper_deliver_controller()
-            tray_has_item = bool(getattr(userdata, "tray_has_item", False))
-            gripper_has_item = bool(getattr(userdata, "gripper_has_item", False))
+            deliver_item_count = count_delivery_item_count_from_order_num(
+                getattr(userdata, "orderlist_num", []),
+            )
 
-            # 先交付夹爪里直接拿着的物品，确保后面的托盘取件阶段开始时夹爪是空的。
-            if gripper_has_item:
-                move_arm_to_joint_positions_once(
-                    DELIVER_EXTEND_JOINTS_RAD,
-                    description="deliver_extend_with_gripper_item",
-                    controller=controller,
-                )
-                release_gripper_once(controller=controller)
-                rospy.sleep(1.0)
-                gripper_has_item = False
+            # 交付阶段不再维护真实占用状态，只按数量列表总件数决定固定动作序列。
+            if deliver_item_count >= 1:
+                deliver_item_from_gripper_once(controller=controller)
 
-            # 如果托盘里还有第一件物品，则按固定顺序取出并再次交付。
-            if tray_has_item:
-                move_arm_to_joint_positions_once(
+            if deliver_item_count >= 2:
+                deliver_item_from_tray_once(
                     TRAY_ABOVE_JOINTS_RAD,
-                    description="tray_above_before_pick_from_tray",
-                    controller=controller,
-                )
-                release_gripper_once(controller=controller)
-                move_arm_to_joint_positions_once(
                     TRAY_PICK_JOINTS_RAD,
-                    description="tray_pick_down",
+                    description_prefix="main_tray",
                     controller=controller,
                 )
-                set_gripper_width_once(GRIPPER_CLOSE_WIDTH_M, controller=controller)
-                move_arm_to_joint_positions_once(
-                    DELIVER_EXTEND_JOINTS_RAD,
-                    description="deliver_extend_with_tray_item",
-                    controller=controller,
-                )
-                release_gripper_once(controller=controller)
-                rospy.sleep(1.0)
-                tray_has_item = False
 
-            move_arm_go_zero_once(controller=controller)
-            rospy.sleep(4.0)
-            userdata.tray_has_item = bool(tray_has_item)
-            userdata.gripper_has_item = bool(gripper_has_item)
+            if deliver_item_count >= 3:
+                deliver_item_from_tray_once(
+                    TRAY_ABOVE_JOINTS_RAD_OTHER,
+                    TRAY_PICK_JOINTS_RAD_OTHER,
+                    description_prefix="other_tray",
+                    controller=controller,
+                )
+
+            if deliver_item_count >= 2:
+                move_arm_go_zero_once(controller=controller)
+
+            if deliver_item_count > 0:
+                rospy.sleep(4.0)
             return "success"
         except Exception as exc:
             rospy.logerr("Final deliver release/go-zero failed: %s", str(exc))
@@ -982,11 +1050,6 @@ def build_service_one_customer_state_machine():
     )
 
     with service_sm:
-        smach.StateMachine.add(
-            "RESET_CARRY_FLAGS",
-            ResetCarryFlagsState(),
-            transitions={"success": "BUILD_CUSTOMER_NAV_POSE"},
-        )
         smach.StateMachine.add(
             "BUILD_CUSTOMER_NAV_POSE",
             BuildCustomerNavPoseState(),
