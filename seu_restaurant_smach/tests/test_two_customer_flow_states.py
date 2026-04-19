@@ -227,6 +227,76 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
             "The customer ordered three cola, one chips, please give me them."
         )
 
+    def test_hot_start_grasp_runtime_should_wait_for_moveit_services_before_loading_runtime(self):
+        module = load_module()
+        runtime = types.SimpleNamespace(name="runtime")
+
+        with patch.object(module.rospy, "wait_for_service") as wait_for_service_mock, patch.object(
+            module,
+            "get_grasp_runtime",
+            return_value=runtime,
+        ) as get_grasp_runtime_mock:
+            result = module.hot_start_grasp_runtime()
+
+        self.assertIs(result, runtime)
+        self.assertEqual(
+            wait_for_service_mock.call_args_list,
+            [
+                call("joint_moveit_ctrl_arm", timeout=30.0),
+                call("joint_moveit_ctrl_gripper", timeout=30.0),
+            ],
+        )
+        get_grasp_runtime_mock.assert_called_once_with()
+
+    def test_main_should_hot_start_grasp_runtime_before_building_state_machine(self):
+        module = load_module()
+        event_log = []
+        fake_sm = types.SimpleNamespace(
+            execute=lambda: event_log.append("execute") or "task_success",
+        )
+        fake_introspection_server = types.SimpleNamespace(
+            start=lambda: event_log.append("introspection_start"),
+            stop=lambda: event_log.append("introspection_stop"),
+        )
+
+        with patch.object(
+            module.rospy,
+            "init_node",
+            side_effect=lambda *args, **kwargs: event_log.append("init_node"),
+        ), patch.object(
+            module,
+            "hot_start_grasp_runtime",
+            side_effect=lambda: event_log.append("hot_start"),
+        ), patch.object(
+            module,
+            "build_top_level_state_machine",
+            side_effect=lambda: event_log.append("build_sm") or fake_sm,
+        ), patch.object(
+            module.smach_ros,
+            "IntrospectionServer",
+            side_effect=lambda *args, **kwargs: event_log.append("make_introspection_server")
+            or fake_introspection_server,
+        ), patch.object(
+            module,
+            "shutdown_grasp_runtime",
+            side_effect=lambda: event_log.append("shutdown_grasp_runtime"),
+        ):
+            module.main()
+
+        self.assertEqual(
+            event_log,
+            [
+                "init_node",
+                "hot_start",
+                "build_sm",
+                "make_introspection_server",
+                "introspection_start",
+                "execute",
+                "shutdown_grasp_runtime",
+                "introspection_stop",
+            ],
+        )
+
     def test_grasp_first_ordered_item_should_use_closed_set_for_matching_item(self):
         module = load_module()
         module.DEBUG = False

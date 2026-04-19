@@ -20,6 +20,7 @@ POSE_MODEL_PATH = '/home/duo/GPSR_ws_zyd/res_demo/yolo26m-pose.pt'
 FRAME_WIDTH = 848
 FRAME_HEIGHT = 480
 FRAME_FPS = 30
+WAVE_CAMERA_SERIAL_NO = "346122072691"
 POSE_IMGSZ = 960
 POSE_CONF = 0.35
 POSE_IOU = 0.45
@@ -202,6 +203,7 @@ class WaveDetectorRuntime:
 
     def __init__(self, model_path=POSE_MODEL_PATH):
         import pyrealsense2 as rs
+        import rospy
         import torch
         from ultralytics import YOLO
 
@@ -214,13 +216,24 @@ class WaveDetectorRuntime:
 
         self.pipeline = rs.pipeline()
         config = rs.config()
+        config.enable_device(WAVE_CAMERA_SERIAL_NO)
         config.enable_stream(rs.stream.depth, FRAME_WIDTH, FRAME_HEIGHT, rs.format.z16, FRAME_FPS)
         config.enable_stream(rs.stream.color, FRAME_WIDTH, FRAME_HEIGHT, rs.format.bgr8, FRAME_FPS)
         self.align_to_color = rs.align(rs.stream.color)
         self.spatial_filter = rs.spatial_filter()
         self.temporal_filter = rs.temporal_filter()
         self.hole_filling_filter = rs.hole_filling_filter()
-        self.pipeline.start(config)
+        self.profile = self.pipeline.start(config)
+        device = self.profile.get_device()
+        actual_sn = device.get_info(rs.camera_info.serial_number)
+        rospy.loginfo("[restaurant_wave][CAM] Connected RealSense SN: %s", actual_sn)
+        if actual_sn != WAVE_CAMERA_SERIAL_NO:
+            raise RuntimeError(
+                "Connected wrong RealSense device for wave: expected {}, got {}".format(
+                    WAVE_CAMERA_SERIAL_NO,
+                    actual_sn,
+                )
+            )
 
         self.frame_index = 0
         self.next_track_id = 1

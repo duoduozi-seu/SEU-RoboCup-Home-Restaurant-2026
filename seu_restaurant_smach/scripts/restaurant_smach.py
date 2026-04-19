@@ -74,19 +74,24 @@ BAR_NAV_EXTENSION_DISTANCE_M = 0.5
 ALIGN_TIMEOUT_SEC = 20.0
 DIALOG_TIMEOUT_SEC = 5.0
 ORDER_MAX_ROUNDS = 2
-ASK_ORDER_TEXT = "Man. What would you like to order you son of bitch?"
+ASK_ORDER_TEXT = "What would you like to order, bro"
 ORDER_REPEAT_PREFIX = "The customer ordered "
-ORDER_REPEAT_SUFFIX = ", please give me them."
-FINAL_DELIVER_TEXT = "I am back. Please take your order. Enjoy your meal. you son of bitch"
-POST_GRASP_REQUEST_TEXT = "please give me the rest things"
+ORDER_REPEAT_SUFFIX = ", please give me them you know M sam"
+FINAL_DELIVER_TEXT = "I am back. Please take your order. Enjoy your meal bro."
+POST_GRASP_REQUEST_TEXT = "please give me the rest things bro"
 GRASP_CATEGORY = "bottle.objects."
 GRASP_PROFILE_BUNDLE_PATH = ""
 GRASP_CONDA_EXE = "conda"
 GRASP_DETECT_ENV_NAME = "/home/duo/anaconda3/envs/groundedsam/bin/python"
 GRASP_ENV_NAME = "/home/duo/anaconda3/envs/GraspGen/bin/python"
-GRASP_CAMERA_SERIAL_NO = ""
+GRASP_CAMERA_SERIAL_NO = "f0244552"
 GRASP_CAMERA_VISUAL_PRESET = 5
 GRASP_CAMERA_WARMUP_FRAMES = 30
+GRASP_WARM_START_SERVICE_TIMEOUT_SEC = 30.0
+GRASP_WARM_START_REQUIRED_SERVICES = (
+    "joint_moveit_ctrl_arm",
+    "joint_moveit_ctrl_gripper",
+)
 CLOSED_SET_ITEM_NAME_LIST = ["cola", "lays", "water", "drink", "milk"]
 
 # 抓取旋转寻找参数
@@ -97,16 +102,20 @@ GRASP_RETRY_ANGULAR_SPEED_RAD_S = 0.25
 GRASP_RETRY_YAW_TOLERANCE_RAD = math.radians(2.0)
 GRASP_RETRY_TIMEOUT_SEC = 8.0
 GRASP_ROTATE_CONTROL_HZ = 20.0
+#抓取倒退常量
+GRASP_BACKOFF_DISTANCE_M = 0.5
+GRASP_BACKOFF_SPEED_M_S = 1.0
+GRASP_BACKOFF_CONTROL_HZ = 20.0
 
 # 下面 5 组是本任务里写死的机械臂关节常量，后续现场联调只改这里。
 # 现有托盘位姿 1：托盘上方的中转位。放入托盘和从托盘取出时都先到这里。
-TRAY_ABOVE_JOINTS_RAD = [-1.608, 1.211, -1.021, 0.00, 1.205, -1.537]
+TRAY_ABOVE_JOINTS_RAD = [-1.605, 1.386, -0.908, 0.00, 1.191, -1.538]
 # 现有托盘位姿 2：托盘的落放/取件位。放入托盘和从托盘取出都用这个点。
-TRAY_PICK_JOINTS_RAD = [-1.605, 1.609, -0.624, 0.0, 0.684, -1.538]
-# 新增托盘位姿 1：另一个托盘上方的中转位。具体数值由现场联调后填写。
-TRAY_ABOVE_JOINTS_RAD_OTHER = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-# 新增托盘位姿 2：另一个托盘的落放/取件位。具体数值由现场联调后填写。
-TRAY_PICK_JOINTS_RAD_OTHER = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+TRAY_PICK_JOINTS_RAD = [-1.605, 1.703, -0.592, 0.0, 0.559, -1.538] #[1.605, 1.703, -0.592, 0.0, 0.559, -1.538]
+# 新增托盘位姿 1：另一个托盘上方的中转位。
+TRAY_ABOVE_JOINTS_RAD_OTHER = [1.605, 1.386, -0.908, 0.00, 1.191, -1.538]
+# 新增托盘位姿 2：另一个托盘的落放/取件位。
+TRAY_PICK_JOINTS_RAD_OTHER = [1.605, 1.703, -0.592, 0.0, 0.559, -1.538]
 # 位姿 3：最终把物品伸到顾客面前，再松开夹爪。
 DELIVER_EXTEND_JOINTS_RAD = [0.0, 1.491, -0.942, 0.0, -0.549, 0.0]
 
@@ -187,6 +196,37 @@ def get_grasp_runtime():
         camera_warmup_frames=GRASP_CAMERA_WARMUP_FRAMES,
     )
     return _GRASP_RUNTIME
+
+
+def hot_start_grasp_runtime():
+    """在状态机执行前前台阻塞完成抓取 runtime 热启动。"""
+    if _GRASP_RUNTIME is not None:
+        return _GRASP_RUNTIME
+
+    for service_name in GRASP_WARM_START_REQUIRED_SERVICES:
+        rospy.loginfo(
+            "Waiting for grasp warm-start dependency: %s (timeout=%.1fs)",
+            service_name,
+            GRASP_WARM_START_SERVICE_TIMEOUT_SEC,
+        )
+        try:
+            rospy.wait_for_service(
+                service_name,
+                timeout=GRASP_WARM_START_SERVICE_TIMEOUT_SEC,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "grasp warm-start blocked: service '{}' not available within {:.1f}s: {}".format(
+                    service_name,
+                    GRASP_WARM_START_SERVICE_TIMEOUT_SEC,
+                    str(exc),
+                )
+            ) from exc
+
+    rospy.loginfo("Starting grasp runtime warm-start")
+    runtime = get_grasp_runtime()
+    rospy.loginfo("Grasp runtime warm-start completed")
+    return runtime
 
 
 def shutdown_grasp_runtime():
@@ -321,6 +361,25 @@ def rotate_base_to_relative_yaw(initial_yaw, relative_yaw_offset_rad):
 
             twist = Twist()
             twist.angular.z = math.copysign(GRASP_RETRY_ANGULAR_SPEED_RAD_S, yaw_error)
+            cmd_vel_publisher.publish(twist)
+            rate.sleep()
+    finally:
+        cmd_vel_publisher.publish(Twist())
+
+
+def drive_base_backward_after_grasp():
+    """抓取状态结束前，按固定速度短距离后退给后续动作留空间。"""
+    if GRASP_BACKOFF_DISTANCE_M <= 0.0 or GRASP_BACKOFF_SPEED_M_S <= 0.0:
+        return
+
+    cmd_vel_publisher = get_cmd_vel_publisher()
+    rate = rospy.Rate(GRASP_BACKOFF_CONTROL_HZ)
+    deadline = time.monotonic() + (GRASP_BACKOFF_DISTANCE_M / GRASP_BACKOFF_SPEED_M_S)
+
+    try:
+        while time.monotonic() < deadline and not rospy.is_shutdown():
+            twist = Twist()
+            twist.linear.x = -GRASP_BACKOFF_SPEED_M_S
             cmd_vel_publisher.publish(twist)
             rate.sleep()
     finally:
@@ -945,6 +1004,7 @@ class GraspFirstOrderedItemState(smach.State):
             rospy.logwarn("Closed-set grasp failed: %s", str(exc))
         finally:
             say_post_grasp_request_once()
+            drive_base_backward_after_grasp()
 
         return "success"
 
@@ -1160,19 +1220,21 @@ def build_top_level_state_machine():
 def main():
     """节点入口。"""
     rospy.init_node("restaurant_smach")
-
-    sm = build_top_level_state_machine()
-    introspection_server = smach_ros.IntrospectionServer("restaurant_smach_view", sm, "/RESTAURANT_SM")
-    introspection_server.start()
+    introspection_server = None
 
     try:
+        hot_start_grasp_runtime()
+        sm = build_top_level_state_machine()
+        introspection_server = smach_ros.IntrospectionServer("restaurant_smach_view", sm, "/RESTAURANT_SM")
+        introspection_server.start()
         outcome = sm.execute()
         rospy.loginfo("restaurant smach finished with final outcome: %s", outcome)
     finally:
         try:
             shutdown_grasp_runtime()
         finally:
-            introspection_server.stop()
+            if introspection_server is not None:
+                introspection_server.stop()
 
 
 if __name__ == "__main__":
