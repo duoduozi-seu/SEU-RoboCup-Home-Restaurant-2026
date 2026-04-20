@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """测试挥手候选目标筛选与调试图像逻辑。"""
 
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -21,6 +22,7 @@ if DEVEL_PYTHON_DIR not in sys.path:
 from find_waving_customer_action_server import (
     MARKER_NS,
     MARKER_TOPIC,
+    accumulate_yaw_rotation,
     base_link_point_to_map_point,
     build_delete_marker,
     build_target_marker_array,
@@ -38,6 +40,26 @@ from tf.transformations import quaternion_from_euler
 
 class WaveGeometryTest(unittest.TestCase):
     """挥手目标选择测试。"""
+
+    def test_accumulate_yaw_rotation_handles_positive_wraparound(self):
+        """跨越 pi 到 -pi 时，累计转角应保持小正增量。"""
+        accumulated_rotation = accumulate_yaw_rotation(
+            0.0,
+            math.radians(179.0),
+            math.radians(-179.0),
+        )
+
+        self.assertAlmostEqual(accumulated_rotation, math.radians(2.0), places=6)
+
+    def test_accumulate_yaw_rotation_handles_negative_wraparound(self):
+        """跨越 -pi 到 pi 时，累计转角应保持小负增量。"""
+        accumulated_rotation = accumulate_yaw_rotation(
+            0.0,
+            math.radians(-179.0),
+            math.radians(179.0),
+        )
+
+        self.assertAlmostEqual(accumulated_rotation, math.radians(-2.0), places=6)
 
     def test_select_nearest_waving_candidate_prefers_smallest_positive_depth(self):
         """多人同时挥手时应选择最近且深度有效的目标。"""

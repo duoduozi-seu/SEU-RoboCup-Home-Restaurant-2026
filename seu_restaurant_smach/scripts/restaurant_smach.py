@@ -68,6 +68,9 @@ TARGET_CUSTOMER_COUNT = 2
 MAX_CUSTOMERS_PER_SCAN = 2
 WAVE_TIMEOUT_SEC = 45.0
 WAVE_ANGULAR_SPEED_RAD_S = 0.25
+#挥手后前进距离
+POST_WAVE_FORWARD_DISTANCE_M = 0.7
+
 NAV_TIMEOUT_SEC = 120.0
 STAND_OFF_DISTANCE_M = 1.0
 BAR_NAV_EXTENSION_DISTANCE_M = 0.5
@@ -829,6 +832,19 @@ class FindWavingCustomersState(smach.State):
 
             detected_customer_points = person_points[:MAX_CUSTOMERS_PER_SCAN]
             userdata.detected_customer_points = detected_customer_points
+            try:
+                post_wave_reference_pose = lookup_robot_pose(timeout_sec=2.0)
+                if not move_base_to_reference_forward_offset(
+                    post_wave_reference_pose,
+                    POST_WAVE_FORWARD_DISTANCE_M,
+                    linear_speed_m_s=GRASP_RETRY_LINEAR_SPEED_M_S,
+                    tolerance_m=GRASP_RETRY_LINEAR_TOLERANCE_M,
+                    control_hz=GRASP_RETRY_LINEAR_CONTROL_HZ,
+                    stage_label="post_wave_forward",
+                ):
+                    rospy.logwarn("Post-wave forward move did not reach target offset.")
+            except Exception as exc:
+                rospy.logwarn("Post-wave forward move skipped: %s", str(exc))
             rospy.loginfo(
                 "Found %d waving customer(s) in current scan.",
                 len(detected_customer_points),

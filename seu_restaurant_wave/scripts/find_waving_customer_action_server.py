@@ -36,6 +36,7 @@ DEFAULT_CAMERA_FRAME = "camera1_color_optical_frame"
 DEFAULT_RATE_HZ = 10.0
 CAMERA_BACKWARD_BIAS_M = -0.60
 SAME_PERSON_DISTANCE_M = 0.40
+FULL_SCAN_ROTATION_RAD = 2.0 * math.pi
 
 
 def camera_point_to_base_link_point(camera_point):
@@ -75,6 +76,28 @@ def base_link_point_to_map_point(robot_pose, base_link_point):
     map_point.y = robot_pose.pose.position.y + math.sin(yaw) * base_x + math.cos(yaw) * base_y
     map_point.z = robot_pose.pose.position.z + base_z
     return map_point
+
+
+def normalize_angle_rad(angle_rad):
+    """把角度归一化到 [-pi, pi]。"""
+    return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
+
+
+def pose_to_yaw(robot_pose):
+    """从 PoseStamped 中提取平面 yaw。"""
+    quaternion = (
+        robot_pose.pose.orientation.x,
+        robot_pose.pose.orientation.y,
+        robot_pose.pose.orientation.z,
+        robot_pose.pose.orientation.w,
+    )
+    return euler_from_quaternion(quaternion)[2]
+
+
+def accumulate_yaw_rotation(accumulated_rotation_rad, previous_yaw, current_yaw):
+    """用相邻两帧的归一化 yaw 差连续累计旋转角。"""
+    yaw_delta = normalize_angle_rad(float(current_yaw) - float(previous_yaw))
+    return float(accumulated_rotation_rad) + yaw_delta
 
 
 def build_target_marker(person_point_map, marker_id=0):
@@ -243,8 +266,8 @@ class FindWavingCustomerActionServer:
         """执行一次完整的“原地转一圈找最近挥手人”流程。"""
         result = FindWavingCustomerResult(success=False, error_msg="")
         angular_speed = goal.angular_speed_rad_s if abs(goal.angular_speed_rad_s) > 1e-6 else 0.15
-        timeout_sec = goal.timeout_sec if goal.timeout_sec > 0.0 else (2.0 * math.pi / abs(angular_speed))
-        scan_duration = min(timeout_sec, 2.0 * math.pi / abs(angular_speed))
+        nominal_scan_duration = FULL_SCAN_ROTATION_RAD / abs(angular_speed)
+        timeout_sec = goal.timeout_sec if goal.timeout_sec > 0.0 else (nominal_scan_duration + 2.0)
         detector = None
         best_candidates_by_track = {}
 
@@ -252,16 +275,28 @@ class FindWavingCustomerActionServer:
             detector = WaveDetectorRuntime()
             rate = rospy.Rate(self.rate_hz)
             start_time = rospy.Time.now()
+            previous_yaw = pose_to_yaw(self._get_current_pose())
+            accumulated_rotation_rad = 0.0
 
             while not rospy.is_shutdown():
                 elapsed = (rospy.Time.now() - start_time).to_sec()
-                if elapsed >= scan_duration:
+                if elapsed >= timeout_sec:
                     break
 
                 if self.server.is_preempt_requested():
                     self._stop_robot()
                     self.server.set_preempted()
                     return
+
+                current_yaw = pose_to_yaw(self._get_current_pose())
+                accumulated_rotation_rad = accumulate_yaw_rotation(
+                    accumulated_rotation_rad,
+                    previous_yaw,
+                    current_yaw,
+                )
+                previous_yaw = current_yaw
+                if abs(accumulated_rotation_rad) >= FULL_SCAN_ROTATION_RAD:
+                    break
 
                 twist = Twist()
                 twist.angular.z = angular_speed

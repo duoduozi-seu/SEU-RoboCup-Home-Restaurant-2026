@@ -757,12 +757,47 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
             person_points_map=[make_point(1.0, 2.0), make_point(3.0, 4.0)],
         )
         userdata = types.SimpleNamespace()
+        reference_pose = types.SimpleNamespace(name="reference_pose")
 
-        outcome = module.FindWavingCustomersState().execute(userdata)
+        with patch.object(module, "lookup_robot_pose", return_value=reference_pose) as lookup_mock, patch.object(
+            module,
+            "move_base_to_reference_forward_offset",
+            return_value=True,
+        ) as move_mock:
+            outcome = module.FindWavingCustomersState().execute(userdata)
 
         self.assertEqual(outcome, "success")
         self.assertEqual(len(userdata.detected_customer_points), 2)
         self.assertAlmostEqual(userdata.detected_customer_points[1].x, 3.0)
+        lookup_mock.assert_called_once_with(timeout_sec=2.0)
+        move_mock.assert_called_once_with(
+            reference_pose,
+            module.POST_WAVE_FORWARD_DISTANCE_M,
+            linear_speed_m_s=module.GRASP_RETRY_LINEAR_SPEED_M_S,
+            tolerance_m=module.GRASP_RETRY_LINEAR_TOLERANCE_M,
+            control_hz=module.GRASP_RETRY_LINEAR_CONTROL_HZ,
+            stage_label="post_wave_forward",
+        )
+
+    def test_find_waving_customers_state_should_continue_when_post_wave_forward_fails(self):
+        module = load_module()
+        FakeActionClient.next_result = types.SimpleNamespace(
+            success=True,
+            person_points_map=[make_point(1.0, 2.0), make_point(3.0, 4.0)],
+        )
+        userdata = types.SimpleNamespace()
+        reference_pose = types.SimpleNamespace(name="reference_pose")
+
+        with patch.object(module, "lookup_robot_pose", return_value=reference_pose), patch.object(
+            module,
+            "move_base_to_reference_forward_offset",
+            return_value=False,
+        ) as move_mock:
+            outcome = module.FindWavingCustomersState().execute(userdata)
+
+        self.assertEqual(outcome, "success")
+        self.assertEqual(len(userdata.detected_customer_points), 2)
+        move_mock.assert_called_once()
 
     def test_load_customer_queue_should_trim_to_remaining_count(self):
         module = load_module()
