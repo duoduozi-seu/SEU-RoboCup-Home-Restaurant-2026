@@ -22,13 +22,16 @@ if DEVEL_PYTHON_DIR not in sys.path:
 from find_waving_customer_action_server import (
     MARKER_NS,
     MARKER_TOPIC,
-    accumulate_yaw_rotation,
     base_link_point_to_map_point,
     build_delete_marker,
     build_target_marker_array,
     build_target_marker,
     camera_point_to_base_link_point,
     deduplicate_nearby_candidates,
+    normalize_angle_rad,
+    should_finish_search_after_candidate_update,
+    update_second_customer_wait_deadline,
+    update_swing_turn_direction,
 )
 from wave_detector_core import (
     render_debug_image,
@@ -41,25 +44,47 @@ from tf.transformations import quaternion_from_euler
 class WaveGeometryTest(unittest.TestCase):
     """挥手目标选择测试。"""
 
-    def test_accumulate_yaw_rotation_handles_positive_wraparound(self):
-        """跨越 pi 到 -pi 时，累计转角应保持小正增量。"""
-        accumulated_rotation = accumulate_yaw_rotation(
-            0.0,
-            math.radians(179.0),
-            math.radians(-179.0),
-        )
+    def test_update_swing_turn_direction_should_switch_to_right_at_positive_limit(self):
+        """摆到左侧 +30 度边界后，应切换成向右回摆。"""
+        turn_direction = update_swing_turn_direction(math.radians(30.0), 1)
 
-        self.assertAlmostEqual(accumulated_rotation, math.radians(2.0), places=6)
+        self.assertEqual(turn_direction, -1)
 
-    def test_accumulate_yaw_rotation_handles_negative_wraparound(self):
-        """跨越 -pi 到 pi 时，累计转角应保持小负增量。"""
-        accumulated_rotation = accumulate_yaw_rotation(
-            0.0,
-            math.radians(-179.0),
-            math.radians(179.0),
-        )
+    def test_update_swing_turn_direction_should_switch_to_left_at_negative_limit(self):
+        """摆到右侧 -30 度边界后，应切换成向左回摆。"""
+        turn_direction = update_swing_turn_direction(math.radians(-30.0), -1)
 
-        self.assertAlmostEqual(accumulated_rotation, math.radians(-2.0), places=6)
+        self.assertEqual(turn_direction, 1)
+
+    def test_normalize_angle_rad_should_keep_relative_yaw_small_across_wraparound(self):
+        """相对起始朝向跨越 ±pi 时，归一化后的偏航应保持小角度。"""
+        relative_yaw = normalize_angle_rad(math.radians(-179.0) - math.radians(179.0))
+
+        self.assertAlmostEqual(relative_yaw, math.radians(2.0), places=6)
+
+    def test_update_second_customer_wait_deadline_should_start_after_first_customer(self):
+        """首次识别到 1 位顾客后，应启动等待下一位顾客的 3 秒窗口。"""
+        deadline = update_second_customer_wait_deadline(None, 1, 12.5)
+
+        self.assertAlmostEqual(deadline, 15.5)
+
+    def test_should_finish_search_after_candidate_update_should_wait_within_three_seconds(self):
+        """只识别到 1 位顾客且 3 秒未到时，不应提前结束。"""
+        should_finish = should_finish_search_after_candidate_update(1, 14.9, 15.5)
+
+        self.assertFalse(should_finish)
+
+    def test_should_finish_search_after_candidate_update_should_stop_after_three_seconds_without_second_person(self):
+        """只识别到 1 位顾客且 3 秒到期后，应结束搜索。"""
+        should_finish = should_finish_search_after_candidate_update(1, 15.5, 15.5)
+
+        self.assertTrue(should_finish)
+
+    def test_should_finish_search_after_candidate_update_should_stop_immediately_for_two_people(self):
+        """一旦累计识别到两位顾客，应立即结束搜索。"""
+        should_finish = should_finish_search_after_candidate_update(2, 13.0, None)
+
+        self.assertTrue(should_finish)
 
     def test_select_nearest_waving_candidate_prefers_smallest_positive_depth(self):
         """多人同时挥手时应选择最近且深度有效的目标。"""

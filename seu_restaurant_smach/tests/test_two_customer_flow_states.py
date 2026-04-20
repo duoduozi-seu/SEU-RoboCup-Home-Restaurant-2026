@@ -205,13 +205,15 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
 
     def test_build_bar_order_repeat_text_should_use_fixed_sentence_and_digit_words(self):
         module = load_module()
+        expected_repeat_text = (
+            module.ORDER_REPEAT_PREFIX
+            + "three cola, one chips"
+            + module.ORDER_REPEAT_SUFFIX
+        )
 
         repeat_text = module.build_bar_order_repeat_text(["cola", "chips"], [3, 1])
 
-        self.assertEqual(
-            repeat_text,
-            "The customer ordered three cola, one chips, please give me them.",
-        )
+        self.assertEqual(repeat_text, expected_repeat_text)
 
     def test_speak_order_at_bar_state_should_use_orderlist_instead_of_original_order_text(self):
         module = load_module()
@@ -226,8 +228,88 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
 
         self.assertEqual(outcome, "success")
         say_once_mock.assert_called_once_with(
-            "The customer ordered three cola, one chips, please give me them."
+            module.ORDER_REPEAT_PREFIX
+            + "three cola, one chips"
+            + module.ORDER_REPEAT_SUFFIX
         )
+
+    def test_get_post_grasp_storage_target_should_prioritize_trays(self):
+        module = load_module()
+        expected_targets = {
+            (1, 1): "main_tray",
+            (2, 1): "main_tray",
+            (2, 2): "other_tray",
+            (3, 1): "main_tray",
+            (3, 2): "other_tray",
+            (3, 3): "gripper",
+        }
+
+        for case, expected_target in expected_targets.items():
+            target_item_count, successful_grasp_count = case
+            with self.subTest(
+                target_item_count=target_item_count,
+                successful_grasp_count=successful_grasp_count,
+            ):
+                storage_target = module.get_post_grasp_storage_target(
+                    target_item_count,
+                    successful_grasp_count,
+                )
+
+                self.assertEqual(storage_target, expected_target)
+
+    def test_final_deliver_speak_state_should_deliver_in_tray_first_order(self):
+        module = load_module()
+        controller = types.SimpleNamespace(name="controller")
+        expected_events = {
+            1: [
+                ("say", module.FINAL_DELIVER_TEXT),
+                ("tray", "main_tray"),
+                ("zero",),
+            ],
+            2: [
+                ("say", module.FINAL_DELIVER_TEXT),
+                ("tray", "main_tray"),
+                ("tray", "other_tray"),
+                ("zero",),
+            ],
+            3: [
+                ("say", module.FINAL_DELIVER_TEXT),
+                ("tray", "main_tray"),
+                ("tray", "other_tray"),
+                ("gripper",),
+                ("zero",),
+            ],
+        }
+
+        for deliver_item_count, expected_event_list in expected_events.items():
+            userdata = types.SimpleNamespace(orderlist_num=[deliver_item_count])
+            event_log = []
+
+            with self.subTest(deliver_item_count=deliver_item_count), patch.object(
+                module,
+                "say_once",
+                side_effect=lambda text: event_log.append(("say", text)),
+            ), patch.object(
+                module,
+                "get_piper_deliver_controller",
+                return_value=controller,
+            ), patch.object(
+                module,
+                "deliver_item_from_tray_once",
+                side_effect=lambda *args, **kwargs: event_log.append(("tray", kwargs["description_prefix"])),
+            ), patch.object(
+                module,
+                "deliver_item_from_gripper_once",
+                side_effect=lambda **kwargs: event_log.append(("gripper",)),
+            ), patch.object(
+                module,
+                "move_arm_go_zero_once",
+                side_effect=lambda **kwargs: event_log.append(("zero",)),
+            ):
+                outcome = module.FinalDeliverSpeakState().execute(userdata)
+
+            self.assertEqual(outcome, "success")
+            self.assertEqual(event_log, expected_event_list)
 
     def test_hot_start_grasp_runtime_should_wait_for_moveit_services_before_loading_runtime(self):
         module = load_module()

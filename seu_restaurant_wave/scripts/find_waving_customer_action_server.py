@@ -5,6 +5,7 @@
 import math
 import os
 import sys
+import time
 
 import actionlib
 import rospy
@@ -36,7 +37,12 @@ DEFAULT_CAMERA_FRAME = "camera1_color_optical_frame"
 DEFAULT_RATE_HZ = 10.0
 CAMERA_BACKWARD_BIAS_M = -0.60
 SAME_PERSON_DISTANCE_M = 0.40
-FULL_SCAN_ROTATION_RAD = 2.0 * math.pi
+DEFAULT_SWING_TIMEOUT_SEC = 30.0
+SWING_HALF_RANGE_RAD = math.radians(30.0)
+WAIT_FOR_NEXT_CUSTOMER_TIMEOUT_SEC = 3.0
+RESTORE_ROTATE_TIMEOUT_SEC = 8.0
+RESTORE_ROTATE_CONTROL_HZ = 20.0
+RESTORE_YAW_TOLERANCE_RAD = math.radians(2.0)
 
 
 def camera_point_to_base_link_point(camera_point):
@@ -94,10 +100,47 @@ def pose_to_yaw(robot_pose):
     return euler_from_quaternion(quaternion)[2]
 
 
-def accumulate_yaw_rotation(accumulated_rotation_rad, previous_yaw, current_yaw):
-    """用相邻两帧的归一化 yaw 差连续累计旋转角。"""
-    yaw_delta = normalize_angle_rad(float(current_yaw) - float(previous_yaw))
-    return float(accumulated_rotation_rad) + yaw_delta
+def update_swing_turn_direction(relative_yaw_rad, current_direction, swing_half_range_rad=SWING_HALF_RANGE_RAD):
+    """根据相对起始朝向的偏航，决定当前左右摇摆方向。"""
+    direction = 1 if float(current_direction) >= 0.0 else -1
+    limit_rad = abs(float(swing_half_range_rad))
+
+    if float(relative_yaw_rad) >= limit_rad:
+        return -1
+    if float(relative_yaw_rad) <= -limit_rad:
+        return 1
+    return direction
+
+
+def update_second_customer_wait_deadline(
+    current_deadline_sec,
+    unique_candidate_count,
+    current_time_sec,
+    wait_timeout_sec=WAIT_FOR_NEXT_CUSTOMER_TIMEOUT_SEC,
+):
+    """首次识别到 1 位顾客后，启动等待下一位顾客的 3 秒窗口。"""
+    if int(unique_candidate_count) != 1:
+        return current_deadline_sec
+    if current_deadline_sec is None:
+        return float(current_time_sec) + float(wait_timeout_sec)
+    return float(current_deadline_sec)
+
+
+def should_finish_search_after_candidate_update(
+    unique_candidate_count,
+    current_time_sec,
+    second_customer_wait_deadline_sec,
+):
+    """识别到两人立即结束；识别到一人后 3 秒内没第二人也结束。"""
+    if int(unique_candidate_count) >= 2:
+        return True
+    if (
+        int(unique_candidate_count) == 1
+        and second_customer_wait_deadline_sec is not None
+        and float(current_time_sec) >= float(second_customer_wait_deadline_sec)
+    ):
+        return True
+    return False
 
 
 def build_target_marker(person_point_map, marker_id=0):
@@ -148,7 +191,7 @@ def deduplicate_nearby_candidates(candidates, same_person_distance_m=SAME_PERSON
     规则：
     1. 先按稳定深度从近到远排序；
     2. 若当前点与已保留点的平面距离不超过阈值，则跳过；
-    3. 这样同一个人在整圈扫描里即便产生多个 track，也只保留一个代表点。
+    3. 这样同一个人在整次扫描里即便产生多个 track，也只保留一个代表点。
     """
     unique_candidates = []
     distance_threshold_sq = float(same_person_distance_m) * float(same_person_distance_m)
@@ -262,21 +305,53 @@ class FindWavingCustomerActionServer:
         self.marker_pub.publish(marker_array)
         self._last_marker_count = len(person_points_map)
 
+    def _restore_initial_yaw(self, initial_yaw, angular_speed_rad_s):
+        """退出 action 前，原地回到扫描开始时的朝向。"""
+        if initial_yaw is None:
+            return
+
+        rotate_speed = abs(float(angular_speed_rad_s)) if abs(float(angular_speed_rad_s)) > 1e-6 else 0.15
+        rate = rospy.Rate(RESTORE_ROTATE_CONTROL_HZ)
+        deadline = time.monotonic() + RESTORE_ROTATE_TIMEOUT_SEC
+
+        try:
+            while not rospy.is_shutdown():
+                try:
+                    current_yaw = pose_to_yaw(self._get_current_pose())
+                except Exception as exc:
+                    rospy.logwarn("[restaurant_wave] restore initial yaw skipped: %s", str(exc))
+                    return
+
+                yaw_error = normalize_angle_rad(float(initial_yaw) - float(current_yaw))
+                if abs(yaw_error) <= RESTORE_YAW_TOLERANCE_RAD:
+                    return
+                if time.monotonic() >= deadline:
+                    rospy.logwarn("[restaurant_wave] restore initial yaw timed out")
+                    return
+
+                twist = Twist()
+                twist.angular.z = math.copysign(rotate_speed, yaw_error)
+                self.cmd_vel_pub.publish(twist)
+                rate.sleep()
+        finally:
+            self._stop_robot()
+
     def execute_cb(self, goal):
-        """执行一次完整的“原地转一圈找最近挥手人”流程。"""
+        """执行一次完整的“原地左右摇摆找最近挥手人”流程。"""
         result = FindWavingCustomerResult(success=False, error_msg="")
-        angular_speed = goal.angular_speed_rad_s if abs(goal.angular_speed_rad_s) > 1e-6 else 0.15
-        nominal_scan_duration = FULL_SCAN_ROTATION_RAD / abs(angular_speed)
-        timeout_sec = goal.timeout_sec if goal.timeout_sec > 0.0 else (nominal_scan_duration + 2.0)
+        angular_speed = abs(goal.angular_speed_rad_s) if abs(goal.angular_speed_rad_s) > 1e-6 else 0.15
+        swing_direction = 1 if goal.angular_speed_rad_s >= 0.0 else -1
+        timeout_sec = goal.timeout_sec if goal.timeout_sec > 0.0 else DEFAULT_SWING_TIMEOUT_SEC
         detector = None
         best_candidates_by_track = {}
+        initial_yaw = None
+        second_customer_wait_deadline_sec = None
 
         try:
             detector = WaveDetectorRuntime()
             rate = rospy.Rate(self.rate_hz)
             start_time = rospy.Time.now()
-            previous_yaw = pose_to_yaw(self._get_current_pose())
-            accumulated_rotation_rad = 0.0
+            initial_yaw = pose_to_yaw(self._get_current_pose())
 
             while not rospy.is_shutdown():
                 elapsed = (rospy.Time.now() - start_time).to_sec()
@@ -285,21 +360,16 @@ class FindWavingCustomerActionServer:
 
                 if self.server.is_preempt_requested():
                     self._stop_robot()
+                    self._restore_initial_yaw(initial_yaw, angular_speed)
                     self.server.set_preempted()
                     return
 
                 current_yaw = pose_to_yaw(self._get_current_pose())
-                accumulated_rotation_rad = accumulate_yaw_rotation(
-                    accumulated_rotation_rad,
-                    previous_yaw,
-                    current_yaw,
-                )
-                previous_yaw = current_yaw
-                if abs(accumulated_rotation_rad) >= FULL_SCAN_ROTATION_RAD:
-                    break
+                relative_yaw = normalize_angle_rad(current_yaw - initial_yaw)
+                swing_direction = update_swing_turn_direction(relative_yaw, swing_direction)
 
                 twist = Twist()
-                twist.angular.z = angular_speed
+                twist.angular.z = angular_speed * swing_direction
                 self.cmd_vel_pub.publish(twist)
 
                 frame_result = detector.process_once()
@@ -347,6 +417,24 @@ class FindWavingCustomerActionServer:
                             "depth_m": float(candidate["depth_m"]),
                             "person_point_map": person_point_map,
                         }
+
+                unique_candidates = deduplicate_nearby_candidates(
+                    best_candidates_by_track.values(),
+                    same_person_distance_m=SAME_PERSON_DISTANCE_M,
+                    max_count=2,
+                )
+                current_elapsed = (rospy.Time.now() - start_time).to_sec()
+                second_customer_wait_deadline_sec = update_second_customer_wait_deadline(
+                    second_customer_wait_deadline_sec,
+                    len(unique_candidates),
+                    current_elapsed,
+                )
+                if should_finish_search_after_candidate_update(
+                    len(unique_candidates),
+                    current_elapsed,
+                    second_customer_wait_deadline_sec,
+                ):
+                    break
                 rate.sleep()
 
             self._stop_robot()
@@ -355,10 +443,11 @@ class FindWavingCustomerActionServer:
                 same_person_distance_m=SAME_PERSON_DISTANCE_M,
                 max_count=2,
             )
+            self._restore_initial_yaw(initial_yaw, angular_speed)
 
             if not best_candidates:
                 self._publish_target_markers([])
-                result.error_msg = "no waving customer found during one full scan"
+                result.error_msg = "no waving customer found within search timeout"
                 self.server.set_aborted(result, result.error_msg)
                 return
 
@@ -368,6 +457,7 @@ class FindWavingCustomerActionServer:
             self.server.set_succeeded(result)
         except Exception as exc:
             self._stop_robot()
+            self._restore_initial_yaw(initial_yaw, angular_speed)
             self._publish_target_markers([])
             result.error_msg = "find waving customer failed: {}".format(exc)
             self.server.set_aborted(result, result.error_msg)

@@ -66,7 +66,7 @@ ROBOT_BASE_FRAME = "base_link"
 
 TARGET_CUSTOMER_COUNT = 2
 MAX_CUSTOMERS_PER_SCAN = 2
-WAVE_TIMEOUT_SEC = 45.0
+WAVE_TIMEOUT_SEC = 30.0
 WAVE_ANGULAR_SPEED_RAD_S = 0.25
 #挥手后前进距离
 POST_WAVE_FORWARD_DISTANCE_M = 0.7
@@ -622,9 +622,9 @@ def get_post_grasp_storage_target(target_item_count, successful_grasp_count):
     if successful_grasp_count < 1 or successful_grasp_count > capped_target_count:
         return "skip"
     if capped_target_count <= 1:
-        return "gripper"
+        return "main_tray"
     if capped_target_count == 2:
-        return "main_tray" if successful_grasp_count == 1 else "gripper"
+        return "main_tray" if successful_grasp_count == 1 else "other_tray"
     if successful_grasp_count == 1:
         return "main_tray"
     if successful_grasp_count == 2:
@@ -1238,9 +1238,6 @@ class FinalDeliverSpeakState(smach.State):
 
             # 交付阶段不再维护真实占用状态，只按数量列表总件数决定固定动作序列。
             if deliver_item_count >= 1:
-                deliver_item_from_gripper_once(controller=controller)
-
-            if deliver_item_count >= 2:
                 deliver_item_from_tray_once(
                     TRAY_ABOVE_JOINTS_RAD,
                     TRAY_PICK_JOINTS_RAD,
@@ -1248,7 +1245,7 @@ class FinalDeliverSpeakState(smach.State):
                     controller=controller,
                 )
 
-            if deliver_item_count >= 3:
+            if deliver_item_count >= 2:
                 deliver_item_from_tray_once(
                     TRAY_ABOVE_JOINTS_RAD_OTHER,
                     TRAY_PICK_JOINTS_RAD_OTHER,
@@ -1256,7 +1253,10 @@ class FinalDeliverSpeakState(smach.State):
                     controller=controller,
                 )
 
-            if deliver_item_count >= 2:
+            if deliver_item_count >= 3:
+                deliver_item_from_gripper_once(controller=controller)
+
+            if deliver_item_count > 0:
                 move_arm_go_zero_once(controller=controller)
 
             if deliver_item_count > 0:
