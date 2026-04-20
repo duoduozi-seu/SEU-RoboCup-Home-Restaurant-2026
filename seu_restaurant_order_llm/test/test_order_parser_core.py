@@ -21,8 +21,15 @@ SCRIPT_DIR = os.path.abspath(SCRIPT_DIR)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+from gemini_api_core import GeminiApiCore  # pylint: disable=import-error
+from qwen_api_core import QWEN_MODEL, QwenApiCore  # pylint: disable=import-error
 from restaurant_order_llm_action_server import (  # pylint: disable=import-error
+    DEFAULT_LLM_PROVIDER,
+    GEMINI_MODEL,
+    LLM_PROVIDER_GEMINI,
+    LLM_PROVIDER_QWEN,
     build_order_parse_prompt,
+    build_llm_runtime,
     normalize_model_output_items,
     parse_item_count_entry,
     parse_item_list_from_model_text,
@@ -31,7 +38,7 @@ from restaurant_order_llm_action_server import (  # pylint: disable=import-error
 
 
 class FakeApiCore:
-    """用固定返回值替代真实 Gemini 请求。"""
+    """用固定返回值替代真实 LLM 请求。"""
 
     def __init__(self, response_list):
         self.response_list = response_list
@@ -46,6 +53,21 @@ class FakeApiCore:
 
 class OrderParserCoreTest(unittest.TestCase):
     """验证订单解析节点中最关键的纯逻辑。"""
+
+    def test_build_llm_runtime_should_default_to_qwen(self):
+        """默认 provider 应该是 qwen，并返回对应 API core 与模型名。"""
+        api_core, model_name = build_llm_runtime()
+
+        self.assertEqual(DEFAULT_LLM_PROVIDER, LLM_PROVIDER_QWEN)
+        self.assertIsInstance(api_core, QwenApiCore)
+        self.assertEqual(model_name, QWEN_MODEL)
+
+    def test_build_llm_runtime_should_support_gemini(self):
+        """显式切到 gemini 时，应返回 Gemini API core 与模型名。"""
+        api_core, model_name = build_llm_runtime(LLM_PROVIDER_GEMINI)
+
+        self.assertIsInstance(api_core, GeminiApiCore)
+        self.assertEqual(model_name, GEMINI_MODEL)
 
     def test_build_order_parse_prompt_should_contain_closed_set_rules_and_examples(self):
         """prompt 里必须包含当前句子、few-shot，以及闭集约束。"""

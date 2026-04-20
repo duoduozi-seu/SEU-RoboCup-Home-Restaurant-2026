@@ -43,6 +43,7 @@ WAIT_FOR_NEXT_CUSTOMER_TIMEOUT_SEC = 3.0
 RESTORE_ROTATE_TIMEOUT_SEC = 8.0
 RESTORE_ROTATE_CONTROL_HZ = 20.0
 RESTORE_YAW_TOLERANCE_RAD = math.radians(2.0)
+SWING_ENDPOINT_PAUSE_SEC = 1.0
 
 
 def camera_point_to_base_link_point(camera_point):
@@ -366,7 +367,11 @@ class FindWavingCustomerActionServer:
 
                 current_yaw = pose_to_yaw(self._get_current_pose())
                 relative_yaw = normalize_angle_rad(current_yaw - initial_yaw)
+                previous_swing_direction = swing_direction
                 swing_direction = update_swing_turn_direction(relative_yaw, swing_direction)
+                if swing_direction != previous_swing_direction:
+                    self._stop_robot()
+                    rospy.sleep(SWING_ENDPOINT_PAUSE_SEC)
 
                 twist = Twist()
                 twist.angular.z = angular_speed * swing_direction

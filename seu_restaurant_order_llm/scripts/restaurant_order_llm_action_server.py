@@ -4,7 +4,7 @@
 
 职责：
 1. 接收一整句英文订单文本；
-2. 调用 Gemini 做关键物品抽取；
+2. 调用 LLM 做关键物品抽取；
 3. 返回按说话顺序整理好的 `string[] items`；
 4. 当前阶段只提供独立 action 节点，不改动状态机接线。
 """
@@ -24,14 +24,27 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from gemini_api_core import GeminiApiCore
+from qwen_api_core import QWEN_MODEL, QwenApiCore
 
 
 # ROS 节点与 action 名称。
 NODE_NAME = "restaurant_order_llm_action_server"
 ACTION_NAME = "parse_restaurant_order"
 
-# Gemini 模型与请求重试次数。
+# LLM provider、默认模型与请求重试次数。
+LLM_PROVIDER_GEMINI = "gemini"
+LLM_PROVIDER_QWEN = "qwen"
+DEFAULT_LLM_PROVIDER = LLM_PROVIDER_QWEN
 GEMINI_MODEL = "gemini-2.5-flash"
+LLM_API_CORE_CLASS_BY_PROVIDER = {
+    LLM_PROVIDER_GEMINI: GeminiApiCore,
+    LLM_PROVIDER_QWEN: QwenApiCore,
+}
+LLM_MODEL_BY_PROVIDER = {
+    LLM_PROVIDER_GEMINI: GEMINI_MODEL,
+    LLM_PROVIDER_QWEN: QWEN_MODEL,
+}
+DEFAULT_LLM_MODEL = LLM_MODEL_BY_PROVIDER[DEFAULT_LLM_PROVIDER]
 MAX_RETRY_TIMES = 3
 DEFAULT_ITEM_COUNT = 1
 ITEM_COUNT_PATTERN = re.compile(r"^(?P<name>.+?)_(?P<count>\d+)$")
@@ -77,6 +90,16 @@ Output: ["cola_2", "chips_2"]"""
 RETRY_HINT_PROMPT = """[Retry instruction]
 Your previous answer did not follow the required format.
 Regenerate and output only one JSON array of strings in the format "item_name_count"."""
+
+
+def build_llm_runtime(provider_name=DEFAULT_LLM_PROVIDER):
+    """按 provider 构造当前 action server 使用的 API core 和模型名。"""
+    normalized_provider_name = str(provider_name or "").strip().lower()
+    api_core_class = LLM_API_CORE_CLASS_BY_PROVIDER.get(normalized_provider_name)
+    model_name = LLM_MODEL_BY_PROVIDER.get(normalized_provider_name)
+    if api_core_class is None or model_name is None:
+        raise ValueError("unsupported llm provider: {}".format(provider_name))
+    return api_core_class(), model_name
 
 
 def normalize_closed_set_item_name(item_name):
@@ -266,7 +289,7 @@ def parse_item_list_from_model_text(model_text, closed_set_item_name_list=None):
 def parse_order_items_with_llm(
     order_text,
     api_core,
-    model_name=GEMINI_MODEL,
+    model_name=DEFAULT_LLM_MODEL,
     max_retry_times=MAX_RETRY_TIMES,
     closed_set_item_name_list=None,
 ):
@@ -295,7 +318,7 @@ def parse_order_items_with_llm(
 
         # 如果 HTTP 或接口层失败，直接记录错误并继续重试。
         if not api_result["ok"]:
-            last_error_msg = api_result["error"] or "gemini request failed"
+            last_error_msg = api_result["error"] or "llm request failed"
             continue
 
         # 如果模型明确返回了空数组，说明它判断句子里没有可提取信息。
@@ -329,11 +352,11 @@ class RestaurantOrderLlmActionServer:
     """餐厅题订单解析 action 服务端。"""
 
     def __init__(self):
-        """初始化 action server 和 Gemini API core。"""
+        """初始化 action server 和默认 LLM API core。"""
         from seu_restaurant_msgs.msg import ParseRestaurantOrderAction
 
         # API core 只负责 HTTP 调用；业务判断都留在本文件里。
-        self.api_core = GeminiApiCore()
+        self.api_core, self.model_name = build_llm_runtime(DEFAULT_LLM_PROVIDER)
         self.server = actionlib.SimpleActionServer(
             ACTION_NAME,
             ParseRestaurantOrderAction,
@@ -369,6 +392,7 @@ class RestaurantOrderLlmActionServer:
         success, items, error_msg = parse_order_items_with_llm(
             order_text,
             self.api_core,
+            model_name=self.model_name,
             closed_set_item_name_list=closed_set_item_name_list,
         )
         result = self.build_result_message(success, error_msg, items)
