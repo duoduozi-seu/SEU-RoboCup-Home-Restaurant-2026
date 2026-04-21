@@ -14,10 +14,6 @@ import os
 import re
 import sys
 
-import actionlib
-import rospy
-
-
 # 这里主动把当前脚本目录加入导入路径，保证直接 rosrun scripts 文件时导入稳定。
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
@@ -34,7 +30,9 @@ ACTION_NAME = "parse_restaurant_order"
 # LLM provider、默认模型与请求重试次数。
 LLM_PROVIDER_GEMINI = "gemini"
 LLM_PROVIDER_QWEN = "qwen"
+#选择llm常量
 DEFAULT_LLM_PROVIDER = LLM_PROVIDER_QWEN
+
 GEMINI_MODEL = "gemini-2.5-flash"
 LLM_API_CORE_CLASS_BY_PROVIDER = {
     LLM_PROVIDER_GEMINI: GeminiApiCore,
@@ -353,6 +351,9 @@ class RestaurantOrderLlmActionServer:
 
     def __init__(self):
         """初始化 action server 和默认 LLM API core。"""
+        import actionlib
+        import rospy
+
         from seu_restaurant_msgs.msg import ParseRestaurantOrderAction
 
         # API core 只负责 HTTP 调用；业务判断都留在本文件里。
@@ -378,6 +379,8 @@ class RestaurantOrderLlmActionServer:
 
     def execute_cb(self, goal):
         """接收一句订单文本，调用 LLM 后返回物品列表。"""
+        import rospy
+
         order_text = goal.order_text.strip()
         closed_set_item_name_list = list(getattr(goal, "closed_set_item_name_list", []) or [])
         rospy.loginfo("[restaurant_order_llm] received order text: %s", order_text)
@@ -408,6 +411,8 @@ class RestaurantOrderLlmActionServer:
 
 def main():
     """节点入口。"""
+    import rospy
+
     # 这里只做 ROS 初始化和 spin，避免入口逻辑分散。
     rospy.init_node(NODE_NAME)
     RestaurantOrderLlmActionServer()
