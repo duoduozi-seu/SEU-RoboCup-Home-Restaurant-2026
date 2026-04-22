@@ -17,6 +17,16 @@ class DummyPoseStamped:
     pass
 
 
+class DummyTwist:
+    def __init__(self):
+        self.linear = types.SimpleNamespace(x=0.0, y=0.0, z=0.0)
+        self.angular = types.SimpleNamespace(x=0.0, y=0.0, z=0.0)
+
+
+class DummyPointCloud2:
+    pass
+
+
 class DummyNavGoal:
     TARGET_MODE_POSE = 2
     TARGET_MODE_NAME = 1
@@ -94,8 +104,22 @@ def load_module():
         Buffer=lambda: types.SimpleNamespace(),
         TransformListener=lambda buffer: types.SimpleNamespace(buffer=buffer),
     )
-    fake_geometry_msgs_msg = _make_module("geometry_msgs.msg", PoseStamped=DummyPoseStamped)
+    fake_geometry_msgs_msg = _make_module(
+        "geometry_msgs.msg",
+        PoseStamped=DummyPoseStamped,
+        Twist=DummyTwist,
+    )
     fake_geometry_msgs = _make_module("geometry_msgs", msg=fake_geometry_msgs_msg)
+    fake_sensor_msgs_msg = _make_module("sensor_msgs.msg", PointCloud2=DummyPointCloud2)
+    fake_sensor_msgs_point_cloud2 = _make_module(
+        "sensor_msgs.point_cloud2",
+        read_points=lambda *args, **kwargs: iter(()),
+    )
+    fake_sensor_msgs = _make_module(
+        "sensor_msgs",
+        msg=fake_sensor_msgs_msg,
+        point_cloud2=fake_sensor_msgs_point_cloud2,
+    )
     fake_restaurant_msgs_msg = _make_module(
         "seu_restaurant_msgs.msg",
         AlignAndTakeOrderAction=object,
@@ -132,6 +156,9 @@ def load_module():
             "tf2_ros": fake_tf2_ros,
             "geometry_msgs": fake_geometry_msgs,
             "geometry_msgs.msg": fake_geometry_msgs_msg,
+            "sensor_msgs": fake_sensor_msgs,
+            "sensor_msgs.msg": fake_sensor_msgs_msg,
+            "sensor_msgs.point_cloud2": fake_sensor_msgs_point_cloud2,
             "seu_restaurant_msgs": fake_restaurant_msgs,
             "seu_restaurant_msgs.msg": fake_restaurant_msgs_msg,
             "seu_voice": fake_voice,

@@ -6,6 +6,7 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   nav_msgs
   rospy
+  sensor_msgs
   smach
   smach_ros
   std_msgs
@@ -16,5 +17,5 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 catkin_package(
-  CATKIN_DEPENDS actionlib geometry_msgs nav_msgs rospy smach smach_ros std_msgs tf seu_nav seu_restaurant_msgs seu_voice
+  CATKIN_DEPENDS actionlib geometry_msgs nav_msgs rospy sensor_msgs smach smach_ros std_msgs tf seu_nav seu_restaurant_msgs seu_voice
 )

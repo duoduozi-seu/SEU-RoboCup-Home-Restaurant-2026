@@ -20,6 +20,7 @@ import math
 import sys
 import time
 import contextlib
+import heapq
 from pathlib import Path
 
 import actionlib
@@ -30,6 +31,8 @@ import tf.transformations
 import tf2_ros
 
 from geometry_msgs.msg import PoseStamped, Twist
+from sensor_msgs.msg import PointCloud2
+import sensor_msgs.point_cloud2 as point_cloud2
 from seu_restaurant_msgs.msg import (
     AlignAndTakeOrderAction,
     AlignAndTakeOrderGoal,
@@ -60,6 +63,7 @@ PIPER_GRIPPER_SERVICE_NAME = "gripper_srv"
 PIPER_GO_ZERO_SERVICE_NAME = "go_zero_srv"
 PIPER_BLOCK_ARM_SERVICE_NAME = "block_arm"
 CMD_VEL_TOPIC = "/cmd_vel"
+CLOUD_REGISTERED_BODY_TOPIC = "/cloud_registered_body"
 
 ODOM_FRAME = "odom"
 ROBOT_BASE_FRAME = "base_link"
@@ -70,7 +74,7 @@ WAVE_TIMEOUT_SEC = 30.0
 #寻找挥手时旋转速度
 WAVE_ANGULAR_SPEED_RAD_S = 0.2
 #挥手后前进距离
-POST_WAVE_FORWARD_DISTANCE_M = 0.7
+POST_WAVE_FORWARD_DISTANCE_M = 0.5
 
 NAV_TIMEOUT_SEC = 120.0
 STAND_OFF_DISTANCE_M = 1.0
@@ -101,19 +105,33 @@ CLOSED_SET_ITEM_NAME_LIST = ["cola", "lays", "water", "drink", "milk"]
 # 抓取旋转寻找参数
 # 餐厅任务现在只允许一次最多抓 3 件“实际物品”，不是 3 个名称。
 MAX_GRASP_ITEM_COUNT = 3
-GRASP_RETRY_YAW_OFFSETS_DEG = [0.0, 15.0, -15.0]
+GRASP_RETRY_YAW_OFFSETS_DEG = [0.0, 10.0, -10.0]
 GRASP_RETRY_ANGULAR_SPEED_RAD_S = 0.25
 GRASP_RETRY_YAW_TOLERANCE_RAD = math.radians(2.0)
 GRASP_RETRY_TIMEOUT_SEC = 8.0
 GRASP_ROTATE_CONTROL_HZ = 20.0
 # 抓取重试前后位移参数。
-GRASP_RETRY_LINEAR_TARGET_OFFSETS_M = [0.0, -0.15, 0.05]
+GRASP_RETRY_LINEAR_TARGET_OFFSETS_M = [0.0, 0.2, -0.2]
 GRASP_RETRY_LINEAR_SPEED_M_S = 0.10
 GRASP_RETRY_LINEAR_TOLERANCE_M = 0.01
 GRASP_RETRY_LINEAR_CONTROL_HZ = 20.0
+# 导航到吧台后的点云对距参数。
+BAR_DOCK_TARGET_DISTANCE_M = 0.4
+BAR_DOCK_CLOUD_WAIT_TIMEOUT_SEC = 2.0
+BAR_DOCK_CLOUD_X_MIN_M = 0.26
+BAR_DOCK_CLOUD_X_MAX_M = 1.00
+BAR_DOCK_CLOUD_Y_MIN_M = -0.10
+BAR_DOCK_CLOUD_Y_MAX_M = 0.10
+BAR_DOCK_CLOUD_Z_MIN_M = 0.20
+BAR_DOCK_CLOUD_Z_MAX_M = 0.70
+BAR_DOCK_CLOUD_NEAREST_POINT_COUNT = 50
+BAR_DOCK_CLOUD_FRAME_COUNT = 10
+GRASP_SIDE_ENTRY_YAW_OFFSET_RAD = math.radians(90.0)
+GRASP_EXIT_YAW_OFFSET_RAD = math.radians(90.0)
+GRASP_EXIT_FORWARD_DISTANCE_M = 0.70
 # 抓取结束后的统一倒退参数。
 GRASP_BACKOFF_DISTANCE_M = 0.5
-GRASP_BACKOFF_SPEED_M_S = 0.5
+GRASP_BACKOFF_SPEED_M_S = 0.2
 GRASP_BACKOFF_CONTROL_HZ = 20.0
 GRASP_BACKOFF_TOLERANCE_M = 0.01
 
@@ -456,6 +474,104 @@ def move_base_to_reference_forward_offset(
         stop_base_motion()
 
 
+def estimate_bar_obstacle_distance_from_cloud_msg(cloud_msg):
+    """从 body 系点云估计正前方障碍物距离，返回最近 50 个 x 的平均值。"""
+    nearest_x_values = []
+    cloud_msgs = cloud_msg if isinstance(cloud_msg, (list, tuple)) else [cloud_msg]
+    for one_cloud_msg in cloud_msgs:
+        for point in point_cloud2.read_points(
+            one_cloud_msg,
+            field_names=("x", "y", "z"),
+            skip_nans=True,
+        ):
+            try:
+                x, y, z = (float(point[0]), float(point[1]), float(point[2]))
+            except (TypeError, ValueError, IndexError):
+                continue
+
+            if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+                continue
+            if x < BAR_DOCK_CLOUD_X_MIN_M or x > BAR_DOCK_CLOUD_X_MAX_M:
+                continue
+            if y < BAR_DOCK_CLOUD_Y_MIN_M or y > BAR_DOCK_CLOUD_Y_MAX_M:
+                continue
+            if z < BAR_DOCK_CLOUD_Z_MIN_M or z > BAR_DOCK_CLOUD_Z_MAX_M:
+                continue
+            nearest_x_values.append(x)
+
+    required_count = int(BAR_DOCK_CLOUD_NEAREST_POINT_COUNT)
+    if len(nearest_x_values) < required_count:
+        rospy.logwarn(
+            "Bar dock cloud has too few filtered points: %d/%d",
+            len(nearest_x_values),
+            required_count,
+        )
+        return None
+
+    nearest_x_values = heapq.nsmallest(required_count, nearest_x_values)
+    return sum(nearest_x_values) / float(required_count)
+
+
+def wait_for_bar_obstacle_distance_once():
+    """订阅一次 body 系点云并估计吧台距离；失败时返回 None 让抓取流程继续。"""
+    cloud_msgs = []
+    try:
+        for _ in range(int(BAR_DOCK_CLOUD_FRAME_COUNT)):
+            cloud_msgs.append(
+                rospy.wait_for_message(
+                    CLOUD_REGISTERED_BODY_TOPIC,
+                    PointCloud2,
+                    timeout=BAR_DOCK_CLOUD_WAIT_TIMEOUT_SEC,
+                )
+            )
+    except Exception as exc:
+        rospy.logwarn(
+            "Bar dock cloud wait failed | topic=%s frames=%d/%d timeout=%.1fs error=%s",
+            CLOUD_REGISTERED_BODY_TOPIC,
+            len(cloud_msgs),
+            int(BAR_DOCK_CLOUD_FRAME_COUNT),
+            BAR_DOCK_CLOUD_WAIT_TIMEOUT_SEC,
+            str(exc),
+        )
+        return None
+
+    try:
+        obstacle_distance_m = estimate_bar_obstacle_distance_from_cloud_msg(cloud_msgs)
+    except Exception as exc:
+        rospy.logwarn("Bar dock cloud distance estimate failed: %s", str(exc))
+        return None
+
+    if obstacle_distance_m is None:
+        return None
+
+    rospy.loginfo("Bar dock obstacle distance from cloud: %.3fm", obstacle_distance_m)
+    return obstacle_distance_m
+
+
+def adjust_bar_docking_distance_once(reference_pose):
+    """导航到吧台后，用前方点云把底盘校正到目标吧台距离。"""
+    obstacle_distance_m = wait_for_bar_obstacle_distance_once()
+    if obstacle_distance_m is None:
+        rospy.logwarn("Bar dock distance adjustment skipped: no valid cloud distance.")
+        return False
+
+    target_forward_offset_m = float(obstacle_distance_m) - float(BAR_DOCK_TARGET_DISTANCE_M)
+    rospy.loginfo(
+        "Bar dock distance adjustment | measured=%.3fm target=%.3fm forward_offset=%.3fm",
+        float(obstacle_distance_m),
+        float(BAR_DOCK_TARGET_DISTANCE_M),
+        target_forward_offset_m,
+    )
+    return move_base_to_reference_forward_offset(
+        reference_pose,
+        target_forward_offset_m,
+        linear_speed_m_s=GRASP_RETRY_LINEAR_SPEED_M_S,
+        tolerance_m=GRASP_RETRY_LINEAR_TOLERANCE_M,
+        control_hz=GRASP_RETRY_LINEAR_CONTROL_HZ,
+        stage_label="bar_dock_distance_adjust",
+    )
+
+
 def extract_closed_set_grasp_failure_kind(grasp_result):
     """把闭集抓取失败最小分成 no_match 和 grasp_error。"""
     if getattr(grasp_result, "success", False):
@@ -491,6 +607,35 @@ def log_closed_set_grasp_failure(target_item_name, failure_kind, grasp_result=No
         detect_status,
         message,
     )
+
+
+def run_closed_set_grasp_attempt(runtime, target_item_name, gdino_prompt):
+    """对单个目标执行一次闭集 detect+plan+grasp，并统一记录失败原因。"""
+    try:
+        grasp_result = _GRASP_BOTTLE_CLOSED_SET(
+            runtime,
+            target_prompt=target_item_name,
+            gdino_prompt=gdino_prompt,
+        )
+    except Exception as exc:
+        log_closed_set_grasp_failure(
+            target_item_name,
+            CLOSED_SET_FAILURE_KIND_GRASP_ERROR,
+            grasp_result=None,
+            exc=exc,
+        )
+        return False
+
+    if getattr(grasp_result, "success", False):
+        return True
+
+    failure_kind = extract_closed_set_grasp_failure_kind(grasp_result)
+    log_closed_set_grasp_failure(
+        target_item_name,
+        failure_kind,
+        grasp_result=grasp_result,
+    )
+    return False
 
 
 def drive_base_backward_after_grasp():
@@ -1062,8 +1207,33 @@ class GraspFirstOrderedItemState(smach.State):
         orderlist_num = list(getattr(userdata, "orderlist_num", []) or [])
         target_item_name_list = build_target_item_name_list_from_order(orderlist, orderlist_num)
         target_item_count = len(target_item_name_list)
+        runtime = None
+        grasp_reference_pose = None
+        grasp_reference_yaw = None
 
         try:
+            try:
+                bar_dock_reference_pose = lookup_robot_pose(timeout_sec=2.0)
+                adjust_bar_docking_distance_once(bar_dock_reference_pose)
+            except Exception as exc:
+                rospy.logwarn("Bar dock distance adjustment skipped: %s", str(exc))
+
+            try:
+                side_entry_reference_pose = lookup_robot_pose(timeout_sec=2.0)
+                side_entry_reference_yaw = pose_to_yaw(side_entry_reference_pose)
+                rotate_base_to_relative_yaw(side_entry_reference_yaw, GRASP_SIDE_ENTRY_YAW_OFFSET_RAD)
+                grasp_reference_pose = lookup_robot_pose(timeout_sec=2.0)
+                grasp_reference_yaw = pose_to_yaw(grasp_reference_pose)
+            except Exception as exc:
+                rospy.logwarn("Failed to enter side grasp pose: %s", str(exc))
+                try:
+                    grasp_reference_pose = lookup_robot_pose(timeout_sec=2.0)
+                    grasp_reference_yaw = pose_to_yaw(grasp_reference_pose)
+                except Exception as pose_exc:
+                    rospy.logwarn("Failed to capture side grasp reference pose: %s", str(pose_exc))
+                    grasp_reference_pose = None
+                    grasp_reference_yaw = None
+
             if not target_item_name_list:
                 return "success"
 
@@ -1075,146 +1245,144 @@ class GraspFirstOrderedItemState(smach.State):
 
             runtime = get_grasp_runtime()
             successful_grasp_count = 0
-            for target_item_name in target_item_name_list:
-                initial_pose = None
-                initial_yaw = None
-                item_grasp_success = False
-                first_failure_kind = ""
+            successful_item_indexes = set()
 
-                def run_closed_set_grasp_attempt():
+            linear_offsets = (
+                GRASP_RETRY_LINEAR_TARGET_OFFSETS_M
+                if grasp_reference_pose is not None
+                else [0.0]
+            )
+            yaw_offsets_deg = (
+                GRASP_RETRY_YAW_OFFSETS_DEG
+                if grasp_reference_yaw is not None
+                else [0.0]
+            )
+
+            for target_offset_m in linear_offsets:
+                if len(successful_item_indexes) >= target_item_count:
+                    break
+
+                if grasp_reference_yaw is not None:
                     try:
-                        grasp_result = _GRASP_BOTTLE_CLOSED_SET(
-                            runtime,
-                            target_prompt=target_item_name,
-                            gdino_prompt=gdino_prompt,
-                        )
-                    except Exception as exc:
-                        failure_kind = CLOSED_SET_FAILURE_KIND_GRASP_ERROR
-                        log_closed_set_grasp_failure(
-                            target_item_name,
-                            failure_kind,
-                            grasp_result=None,
-                            exc=exc,
-                        )
-                        return False, failure_kind
+                        rotate_base_to_relative_yaw(grasp_reference_yaw, 0.0)
+                    except Exception:
+                        pass
 
-                    if getattr(grasp_result, "success", False):
-                        return True, ""
-
-                    failure_kind = extract_closed_set_grasp_failure_kind(grasp_result)
-                    log_closed_set_grasp_failure(
-                        target_item_name,
-                        failure_kind,
-                        grasp_result=grasp_result,
-                    )
-                    return False, failure_kind
-
-                try:
+                if grasp_reference_pose is not None:
                     try:
-                        initial_pose = lookup_robot_pose(timeout_sec=2.0)
-                        initial_yaw = pose_to_yaw(initial_pose)
+                        move_base_to_reference_forward_offset(
+                            grasp_reference_pose,
+                            float(target_offset_m),
+                            linear_speed_m_s=GRASP_RETRY_LINEAR_SPEED_M_S,
+                            tolerance_m=GRASP_RETRY_LINEAR_TOLERANCE_M,
+                            control_hz=GRASP_RETRY_LINEAR_CONTROL_HZ,
+                            stage_label="grasp_retry_linear",
+                        )
                     except Exception as exc:
                         rospy.logwarn(
-                            "Failed to capture initial base pose before grasp retry | item=%s error=%s",
-                            target_item_name,
+                            "Grasp retry linear move skipped | offset=%.3fm error=%s",
+                            float(target_offset_m),
                             str(exc),
                         )
-                        initial_pose = None
-                        initial_yaw = None
 
-                    item_grasp_success, first_failure_kind = run_closed_set_grasp_attempt()
-                    if item_grasp_success:
-                        pass
-                    elif first_failure_kind == CLOSED_SET_FAILURE_KIND_NO_MATCH and initial_yaw is not None:
-                        for offset_deg in GRASP_RETRY_YAW_OFFSETS_DEG[1:]:
-                            try:
-                                rotate_base_to_relative_yaw(initial_yaw, math.radians(offset_deg))
-                            except Exception:
-                                pass
+                for yaw_offset_deg in yaw_offsets_deg:
+                    if len(successful_item_indexes) >= target_item_count:
+                        break
 
-                            item_grasp_success, _ = run_closed_set_grasp_attempt()
-                            if item_grasp_success:
-                                break
-                    elif (
-                        first_failure_kind == CLOSED_SET_FAILURE_KIND_GRASP_ERROR
-                        and initial_pose is not None
-                    ):
-                        for target_offset_m in GRASP_RETRY_LINEAR_TARGET_OFFSETS_M[1:]:
-                            try:
-                                move_base_to_reference_forward_offset(
-                                    initial_pose,
-                                    float(target_offset_m),
-                                    linear_speed_m_s=GRASP_RETRY_LINEAR_SPEED_M_S,
-                                    tolerance_m=GRASP_RETRY_LINEAR_TOLERANCE_M,
-                                    control_hz=GRASP_RETRY_LINEAR_CONTROL_HZ,
-                                    stage_label="grasp_retry_linear",
-                                )
-                            except Exception:
-                                pass
-
-                            item_grasp_success, _ = run_closed_set_grasp_attempt()
-                            if item_grasp_success:
-                                break
-                except Exception as exc:
-                    log_closed_set_grasp_failure(
-                        target_item_name,
-                        first_failure_kind or CLOSED_SET_FAILURE_KIND_GRASP_ERROR,
-                        grasp_result=None,
-                        exc=exc,
-                    )
-                finally:
-                    if initial_yaw is not None:
+                    if grasp_reference_yaw is not None:
                         try:
-                            rotate_base_to_relative_yaw(initial_yaw, 0.0)
-                        except Exception:
-                            pass
-                    if initial_pose is not None:
-                        try:
-                            move_base_to_reference_forward_offset(
-                                initial_pose,
-                                0.0,
-                                linear_speed_m_s=GRASP_RETRY_LINEAR_SPEED_M_S,
-                                tolerance_m=GRASP_RETRY_LINEAR_TOLERANCE_M,
-                                control_hz=GRASP_RETRY_LINEAR_CONTROL_HZ,
-                                stage_label="grasp_retry_restore",
+                            rotate_base_to_relative_yaw(
+                                grasp_reference_yaw,
+                                math.radians(float(yaw_offset_deg)),
                             )
                         except Exception:
                             pass
 
-                if not item_grasp_success:
-                    continue
+                    for item_index, target_item_name in enumerate(target_item_name_list):
+                        if item_index in successful_item_indexes:
+                            continue
 
-                successful_grasp_count += 1
-                storage_target = get_post_grasp_storage_target(target_item_count, successful_grasp_count)
+                        item_grasp_success = run_closed_set_grasp_attempt(
+                            runtime,
+                            target_item_name,
+                            gdino_prompt,
+                        )
+                        if not item_grasp_success:
+                            continue
 
-                # 这次任务不再维护“夹爪/托盘是否有物品”的内部标记，
-                # 只按本轮目标总件数把成功抓到的物品落到固定位置。
-                if storage_target == "main_tray":
-                    place_item_on_tray_once(
-                        TRAY_ABOVE_JOINTS_RAD,
-                        TRAY_PICK_JOINTS_RAD,
-                        description_prefix="main_tray",
-                        controller=runtime.controller,
-                    )
-                    continue
+                        successful_item_indexes.add(item_index)
+                        successful_grasp_count += 1
+                        storage_target = get_post_grasp_storage_target(
+                            target_item_count,
+                            successful_grasp_count,
+                        )
 
-                if storage_target == "other_tray":
-                    place_item_on_tray_once(
-                        TRAY_ABOVE_JOINTS_RAD_OTHER,
-                        TRAY_PICK_JOINTS_RAD_OTHER,
-                        description_prefix="other_tray",
-                        controller=runtime.controller,
-                    )
-                    continue
+                        # 这次任务不再维护“夹爪/托盘是否有物品”的内部标记，
+                        # 只按本轮目标总件数把成功抓到的物品落到固定位置。
+                        if storage_target == "main_tray":
+                            place_item_on_tray_once(
+                                TRAY_ABOVE_JOINTS_RAD,
+                                TRAY_PICK_JOINTS_RAD,
+                                description_prefix="main_tray",
+                                controller=runtime.controller,
+                            )
+                            continue
 
-                # 需要直接交付给顾客的那一件保留在夹爪里即可。
-                if storage_target == "gripper":
-                    break
+                        if storage_target == "other_tray":
+                            place_item_on_tray_once(
+                                TRAY_ABOVE_JOINTS_RAD_OTHER,
+                                TRAY_PICK_JOINTS_RAD_OTHER,
+                                description_prefix="other_tray",
+                                controller=runtime.controller,
+                            )
+                            continue
+
+                        # 第三件抓到后保留在夹爪中；夹爪占用后不能再继续抓取。
+                        if storage_target == "gripper":
+                            break
         except Exception as exc:
             rospy.logwarn("Closed-set grasp failed: %s", str(exc))
         finally:
             say_post_grasp_request_once()
-            drive_base_backward_after_grasp()
+            if runtime is not None:
+                try:
+                    move_arm_go_zero_once(controller=runtime.controller)
+                except Exception as exc:
+                    rospy.logwarn("Post-grasp arm go-zero failed: %s", str(exc))
+
+            if grasp_reference_yaw is not None:
+                try:
+                    rotate_base_to_relative_yaw(grasp_reference_yaw, 0.0)
+                except Exception:
+                    pass
+
+            if grasp_reference_pose is not None:
+                try:
+                    move_base_to_reference_forward_offset(
+                        grasp_reference_pose,
+                        0.0,
+                        linear_speed_m_s=GRASP_RETRY_LINEAR_SPEED_M_S,
+                        tolerance_m=GRASP_RETRY_LINEAR_TOLERANCE_M,
+                        control_hz=GRASP_RETRY_LINEAR_CONTROL_HZ,
+                        stage_label="grasp_retry_restore",
+                    )
+                except Exception as exc:
+                    rospy.logwarn("Post-grasp base restore failed: %s", str(exc))
+
+            if grasp_reference_yaw is not None:
+                try:
+                    rotate_base_to_relative_yaw(grasp_reference_yaw, GRASP_EXIT_YAW_OFFSET_RAD)
+                    exit_forward_reference_pose = lookup_robot_pose(timeout_sec=2.0)
+                    move_base_to_reference_forward_offset(
+                        exit_forward_reference_pose,
+                        GRASP_EXIT_FORWARD_DISTANCE_M,
+                        linear_speed_m_s=GRASP_BACKOFF_SPEED_M_S,
+                        tolerance_m=GRASP_BACKOFF_TOLERANCE_M,
+                        control_hz=GRASP_BACKOFF_CONTROL_HZ,
+                        stage_label="grasp_exit_forward",
+                    )
+                except Exception as exc:
+                    rospy.logwarn("Post-grasp exit base motion failed: %s", str(exc))
 
         return "success"
 
