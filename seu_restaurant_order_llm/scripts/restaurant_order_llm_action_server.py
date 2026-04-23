@@ -48,46 +48,59 @@ DEFAULT_ITEM_COUNT = 1
 ITEM_COUNT_PATTERN = re.compile(r"^(?P<name>.+?)_(?P<count>\d+)$")
 
 # 规则 prompt：强约束模型只输出一个 JSON 数组。
-# 这里不再给任何硬编码候选词表，也不写自定义映射关系，只做通用抽取。
+# 当前餐厅题所有待抓取物品都来自上游闭集列表，不再允许开放集物品兜底。
 ORDER_PARSE_RULE_PROMPT = """You are an item extraction module for a restaurant service robot.
-Your job is to read one English customer order sentence and extract the requested items with quantities.
+Your job is to read one English customer order sentence and extract only the requested items that match the provided closed-set canonical item list.
 
 Strict rules:
 1. Output only one JSON array of strings.
 2. Do not output explanations, markdown, code fences, or extra words.
-3. Each string must use the format "item_name_count".
-4. If the quantity is not clearly mentioned, use 1.
-5. If the same item appears multiple times, merge it into one entry and sum the quantity.
-6. Keep item entries ordered by the first time the customer mentioned each item.
-7. Keep each item name as a short lower-case English item phrase.
-8. Do not invent any special mapping relation. Keep the original item meaning.
-9. If the speech recognition text has small mistakes, infer the most likely intended item phrase.
-10. Remove quantity words and packaging helper words like bottle, bag, cup, can, pack, or piece when they are not the item itself.
-11. If no valid item can be extracted, output [].
+3. Each string must use the format "canonical_item_name_count", for example "cola_2" means canonical item name "cola" with count 2.
+4. Every item name in the output must be exactly one canonical item name from the closed-set list.
+5. Never output an item name that is not in the closed-set list.
+6. If a mentioned object cannot be confidently matched to one closed-set canonical item, ignore that object.
+7. If no mentioned object can be confidently matched to the closed-set list, output [].
+8. If the quantity is not clearly mentioned, use 1.
+9. If the same canonical item appears multiple times, merge it into one entry and sum the quantity.
+10. Keep item entries ordered by the first time the customer mentioned each item.
+11. Remove quantity words and packaging helper words like bottle, bag, cup, can, pack, or piece when they are not part of the canonical item name.
+12. The customer sentence comes from speech recognition and may contain small ASR errors, spelling errors, homophone errors, or strange words.
+13. For simple English food or drink orders, infer the most likely intended closed-set item when the ASR text is close in sound, spelling, or meaning to a canonical item.
+14. Examples of acceptable ASR correction: "ladies", "lace", or "lays chips" may refer to canonical "lays" if "lays" is in the closed-set list.
+15. Do not invent unusual interpretations. If the intended item is still unclear after reasonable ASR correction, output [] or ignore only the unclear object.
+16. The user may say simple sentences like "i want xxx and xxx", "please give me xxx", or "can i have two xxx and one yyy".
 
 Output only one JSON array, for example: ["cola_2", "chips_1", "mineral water_1"]"""
 
 # few-shot prompt：直接给模型示范输入和目标输出风格。
 ORDER_PARSE_FEW_SHOT_PROMPT = """[Few-shot examples]
 Customer: i want a bottle of cola and a bag of chips and a bottle of mineral water
+Closed-set canonical item names: ["cola", "chips", "mineral water", "cookie"]
 Output: ["cola_1", "chips_1", "mineral water_1"]
 
 Customer: please give me two bottles of water and one cookie
+Closed-set canonical item names: ["water", "cookie", "orange juice"]
 Output: ["water_2", "cookie_1"]
 
 Customer: can i have orange juice and a pack of crackers
+Closed-set canonical item names: ["orange juice", "crackers", "bread"]
 Output: ["orange juice_1", "crackers_1"]
 
 Customer: i would like bread, chocolate milk and apple juice
+Closed-set canonical item names: ["bread", "chocolate milk", "apple juice"]
 Output: ["bread_1", "chocolate milk_1", "apple juice_1"]
 
 Customer: i want cola and one more cola and two chips
+Closed-set canonical item names: ["cola", "chips", "bread"]
 Output: ["cola_2", "chips_2"]"""
 
 # 当模型第一次格式不对时，第二次会补一段更硬的提醒。
 RETRY_HINT_PROMPT = """[Retry instruction]
 Your previous answer did not follow the required format.
-Regenerate and output only one JSON array of strings in the format "item_name_count"."""
+Regenerate and output only one JSON array of strings in the format "canonical_item_name_count", for example "cola_2".
+Every canonical_item_name must be copied exactly from the closed-set list.
+If no closed-set item can be confidently extracted, output [].
+"""
 
 
 def build_llm_runtime(provider_name=DEFAULT_LLM_PROVIDER):
@@ -123,10 +136,10 @@ def build_closed_set_prompt_text(closed_set_item_name_list):
 
     return """[Closed-set canonical item names]
 Canonical closed-set item names: {}
-If the intended item is one of the closed-set item names above, you must output exactly the canonical name from that list.
-Do not output plural, variant, or paraphrased forms for closed-set items. Example: drinks -> drink.
-If an ASR or homophone mistake most likely refers to a closed-set item, correct it to the most likely closed-set canonical name. Example: lace -> lays.
-If the intended item is not in the closed set, keep the original open-set item phrase as usual.""".format(
+You must choose output item names only from the closed-set canonical item names above.
+Use the exact spelling, spacing, and singular/plural form from the closed-set list.
+If an ASR or homophone mistake most likely refers to a closed-set item, correct it to the most likely closed-set canonical name.
+If the intended item is not in the closed set, ignore it. If no closed-set item remains, output [].""".format(
         json.dumps(normalized_names)
     )
 
@@ -168,11 +181,31 @@ def build_order_parse_prompt(order_text, retry_hint_text="", closed_set_item_nam
     if closed_set_prompt_text:
         prompt += "\n\n"
         prompt += """Customer: please give me two drinks and one lays
+Closed-set canonical item names: ["drink", "lays", "water"]
 Output: ["drink_2", "lays_1"]
 
+Customer: i want ladies and water
+Closed-set canonical item names: ["lays", "water", "cola"]
+Output: ["lays_1", "water_1"]
+
 Customer: i want lace and a bottle of water
-Output: ["lays_1", "water_1"]"""
+Closed-set canonical item names: ["lays", "water", "cola"]
+Output: ["lays_1", "water_1"]
+
+Customer: i want sandwich and dragon fruit
+Closed-set canonical item names: ["cola", "lays", "water"]
+Output: []
+
+Customer: i want cola and something strange
+Closed-set canonical item names: ["cola", "lays", "water"]
+Output: ["cola_1"]"""
     prompt += "\n\n"
+
+    if closed_set_prompt_text:
+        prompt += "[Current closed-set reminder]\n"
+        prompt += "For the current customer sentence, output item names only from this list: {}.\n\n".format(
+            json.dumps(build_closed_set_item_name_list(closed_set_item_name_list))
+        )
 
     # 最后放当前顾客的真实句子，避免它把示例内容混进结果里。
     prompt += "[Current customer sentence]\n"
@@ -260,6 +293,8 @@ def normalize_model_output_items(item_list, closed_set_item_name_list=None):
         item_name, item_count = parse_item_count_entry(item, closed_set_item_name_set)
         if not item_name:
             continue
+        if closed_set_item_name_set and item_name not in closed_set_item_name_set:
+            continue
         if item_name not in item_count_map:
             ordered_item_names.append(item_name)
             item_count_map[item_name] = 0
@@ -322,6 +357,7 @@ def parse_order_items_with_llm(
         # 如果模型明确返回了空数组，说明它判断句子里没有可提取信息。
         # 按当前任务要求，这种情况不继续重试，直接返回 no_info。
         json_array_text = extract_first_json_array_text(api_result["text"])
+        parsed_data = None
         if json_array_text:
             try:
                 parsed_data = json.loads(json_array_text)
@@ -339,8 +375,11 @@ def parse_order_items_with_llm(
         if items:
             return True, items, ""
 
-        # 进入这里说明模型文字存在，但格式不对；下一轮追加更强的格式提醒。
-        last_error_msg = "llm response format is invalid"
+        # 进入这里说明模型文字存在但还没得到有效闭集物品；下一轮追加更强的格式提醒。
+        if isinstance(parsed_data, list):
+            last_error_msg = "no_info"
+        else:
+            last_error_msg = "llm response format is invalid"
         retry_hint_text = RETRY_HINT_PROMPT
 
     return False, [], last_error_msg

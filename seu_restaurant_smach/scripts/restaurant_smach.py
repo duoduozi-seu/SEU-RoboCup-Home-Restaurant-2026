@@ -53,6 +53,7 @@ for search_path in (SCRIPT_DIR, WORKSPACE_SRC_DIR):
         sys.path.insert(0, search_path)
 
 from restaurant_states import build_bar_nav_and_pid_poses, build_customer_nav_pose
+from restaurant_start_screen import wait_for_restaurant_start
 
 # --- 配置常量 ---
 WAVE_ACTION_NAME = "find_waving_customer"
@@ -100,7 +101,7 @@ GRASP_WARM_START_REQUIRED_SERVICES = (
     "joint_moveit_ctrl_arm",
     "joint_moveit_ctrl_gripper",
 )
-CLOSED_SET_ITEM_NAME_LIST = ["cola", "lays", "water", "drink", "milk"]
+CLOSED_SET_ITEM_NAME_LIST = ["cola", "chips", "water", "drink", "milk", "alien", "yunimilk"]
 
 # 抓取旋转寻找参数
 # 餐厅任务现在只允许一次最多抓 3 件“实际物品”，不是 3 个名称。
@@ -108,13 +109,13 @@ MAX_GRASP_ITEM_COUNT = 3
 GRASP_RETRY_YAW_OFFSETS_DEG = [0.0, 10.0, -10.0]
 # 分别控制 GRASP_RETRY_LINEAR_TARGET_OFFSETS_M 三个坐标是否启用旋转尝试。
 # 设为 False 时，该坐标只尝试 0 度，不再尝试后续 +/- yaw。
-GRASP_RETRY_ENABLE_YAW_BY_LINEAR_OFFSET = [True, True, True]
-GRASP_RETRY_ANGULAR_SPEED_RAD_S = 0.25
+GRASP_RETRY_ENABLE_YAW_BY_LINEAR_OFFSET = [False, False, False]
+GRASP_RETRY_ANGULAR_SPEED_RAD_S = 0.2
 GRASP_RETRY_YAW_TOLERANCE_RAD = math.radians(2.0)
 GRASP_RETRY_TIMEOUT_SEC = 8.0
 GRASP_ROTATE_CONTROL_HZ = 20.0
 # 抓取重试前后位移参数。
-GRASP_RETRY_LINEAR_TARGET_OFFSETS_M = [0.0, 0.2, -0.2]
+GRASP_RETRY_LINEAR_TARGET_OFFSETS_M = [0.0, 0.25, -0.25]
 GRASP_RETRY_LINEAR_SPEED_M_S = 0.10
 GRASP_RETRY_LINEAR_TOLERANCE_M = 0.01
 GRASP_RETRY_LINEAR_CONTROL_HZ = 20.0
@@ -1609,6 +1610,7 @@ def main():
 
     try:
         hot_start_grasp_runtime()
+        wait_for_restaurant_start()
         sm = build_top_level_state_machine()
         introspection_server = smach_ros.IntrospectionServer("restaurant_smach_view", sm, "/RESTAURANT_SM")
         introspection_server.start()
