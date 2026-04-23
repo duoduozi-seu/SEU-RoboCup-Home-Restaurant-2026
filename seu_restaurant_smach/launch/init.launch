@@ -29,5 +29,7 @@
     <node pkg="seu_restaurant_order_llm" type="restaurant_order_llm_action_server.py" name="restaurant_order_llm_action_server" output="screen"/>
 
     <!-- 餐厅题主状态机 -->
-    <node pkg="seu_restaurant_smach" type="restaurant_smach.py" name="restaurant_smach" output="screen"/>
+    <node pkg="seu_restaurant_smach" type="restaurant_smach.py" name="restaurant_smach" output="screen">
+        <env name="DETECT_GRASP_PRELOAD_GRASP" value="1"/>
+    </node>
 </launch>
