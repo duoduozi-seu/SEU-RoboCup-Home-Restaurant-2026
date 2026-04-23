@@ -82,7 +82,7 @@ BAR_NAV_EXTENSION_DISTANCE_M = 0.5
 ALIGN_TIMEOUT_SEC = 20.0
 DIALOG_TIMEOUT_SEC = 5.0
 ORDER_MAX_ROUNDS = 2
-ASK_ORDER_TEXT = "What would you like to order, bro"
+ASK_ORDER_TEXT = "hello, What would you like to order, bro"
 ORDER_REPEAT_PREFIX = "The customer ordered "
 ORDER_REPEAT_SUFFIX = ", please give me them you know M sam"
 FINAL_DELIVER_TEXT = "I am back. Please take your order. Enjoy your meal bro."
@@ -106,6 +106,9 @@ CLOSED_SET_ITEM_NAME_LIST = ["cola", "lays", "water", "drink", "milk"]
 # 餐厅任务现在只允许一次最多抓 3 件“实际物品”，不是 3 个名称。
 MAX_GRASP_ITEM_COUNT = 3
 GRASP_RETRY_YAW_OFFSETS_DEG = [0.0, 10.0, -10.0]
+# 分别控制 GRASP_RETRY_LINEAR_TARGET_OFFSETS_M 三个坐标是否启用旋转尝试。
+# 设为 False 时，该坐标只尝试 0 度，不再尝试后续 +/- yaw。
+GRASP_RETRY_ENABLE_YAW_BY_LINEAR_OFFSET = [True, True, True]
 GRASP_RETRY_ANGULAR_SPEED_RAD_S = 0.25
 GRASP_RETRY_YAW_TOLERANCE_RAD = math.radians(2.0)
 GRASP_RETRY_TIMEOUT_SEC = 8.0
@@ -1252,13 +1255,7 @@ class GraspFirstOrderedItemState(smach.State):
                 if grasp_reference_pose is not None
                 else [0.0]
             )
-            yaw_offsets_deg = (
-                GRASP_RETRY_YAW_OFFSETS_DEG
-                if grasp_reference_yaw is not None
-                else [0.0]
-            )
-
-            for target_offset_m in linear_offsets:
+            for linear_offset_index, target_offset_m in enumerate(linear_offsets):
                 if len(successful_item_indexes) >= target_item_count:
                     break
 
@@ -1284,6 +1281,16 @@ class GraspFirstOrderedItemState(smach.State):
                             float(target_offset_m),
                             str(exc),
                         )
+
+                yaw_offsets_deg = (
+                    GRASP_RETRY_YAW_OFFSETS_DEG
+                    if (
+                        grasp_reference_yaw is not None
+                        and linear_offset_index < len(GRASP_RETRY_ENABLE_YAW_BY_LINEAR_OFFSET)
+                        and bool(GRASP_RETRY_ENABLE_YAW_BY_LINEAR_OFFSET[linear_offset_index])
+                    )
+                    else [0.0]
+                )
 
                 for yaw_offset_deg in yaw_offsets_deg:
                     if len(successful_item_indexes) >= target_item_count:

@@ -429,7 +429,7 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
         self.assertTrue(result)
         move_mock.assert_called_once()
         self.assertIs(move_mock.call_args.args[0], reference_pose)
-        self.assertAlmostEqual(move_mock.call_args.args[1], 0.05)
+        self.assertAlmostEqual(move_mock.call_args.args[1], 0.4 - module.BAR_DOCK_TARGET_DISTANCE_M)
         self.assertEqual(move_mock.call_args.kwargs["linear_speed_m_s"], module.GRASP_RETRY_LINEAR_SPEED_M_S)
         self.assertEqual(move_mock.call_args.kwargs["tolerance_m"], module.GRASP_RETRY_LINEAR_TOLERANCE_M)
         self.assertEqual(move_mock.call_args.kwargs["control_hz"], module.GRASP_RETRY_LINEAR_CONTROL_HZ)
@@ -513,8 +513,8 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
                 call(reference_yaw, module.GRASP_SIDE_ENTRY_YAW_OFFSET_RAD),
                 call(reference_yaw, 0.0),
                 call(reference_yaw, 0.0),
-                call(reference_yaw, math.radians(30.0)),
-                call(reference_yaw, math.radians(-30.0)),
+                call(reference_yaw, math.radians(module.GRASP_RETRY_YAW_OFFSETS_DEG[1])),
+                call(reference_yaw, math.radians(module.GRASP_RETRY_YAW_OFFSETS_DEG[2])),
                 call(reference_yaw, 0.0),
                 call(reference_yaw, module.GRASP_EXIT_YAW_OFFSET_RAD),
             ],
@@ -534,6 +534,7 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
         module = load_module()
         module.DEBUG = False
         module.CLOSED_SET_ITEM_NAME_LIST = ["cola"]
+        module.GRASP_RETRY_ENABLE_YAW_BY_LINEAR_OFFSET = [True, True, True]
         runtime = types.SimpleNamespace(controller=types.SimpleNamespace(name="controller"))
         reference_pose = types.SimpleNamespace(name="reference_pose")
         reference_yaw = -0.2
@@ -575,6 +576,64 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
             module.GRASP_RETRY_LINEAR_TARGET_OFFSETS_M,
         )
         self.assertEqual(rotate_mock.call_count, 15)
+
+    def test_grasp_first_ordered_item_should_allow_disabling_yaw_retries_per_linear_offset(self):
+        module = load_module()
+        module.DEBUG = False
+        module.CLOSED_SET_ITEM_NAME_LIST = ["cola"]
+        module.GRASP_RETRY_ENABLE_YAW_BY_LINEAR_OFFSET = [False, True, False]
+        runtime = types.SimpleNamespace(controller=types.SimpleNamespace(name="controller"))
+        reference_pose = types.SimpleNamespace(name="reference_pose")
+        reference_yaw = -0.2
+        userdata = types.SimpleNamespace(orderlist=["Cola"], orderlist_num=[1])
+        fail = types.SimpleNamespace(success=False, status="failed", candidate_index=-1, message="")
+
+        with patch.object(module, "lookup_robot_pose", return_value=reference_pose), patch.object(
+            module,
+            "pose_to_yaw",
+            return_value=reference_yaw,
+        ), patch.object(module, "adjust_bar_docking_distance_once", return_value=True), patch.object(
+            module,
+            "rotate_base_to_relative_yaw",
+        ) as rotate_mock, patch.object(
+            module,
+            "move_base_to_reference_forward_offset",
+            return_value=True,
+        ), patch.object(
+            module,
+            "get_grasp_runtime",
+            return_value=runtime,
+        ), patch.object(
+            module,
+            "_GRASP_BOTTLE_CLOSED_SET",
+            side_effect=[fail] * 5,
+        ) as closed_set_mock, patch.object(
+            module,
+            "move_arm_go_zero_once",
+        ), patch.object(
+            module,
+            "say_post_grasp_request_once",
+        ):
+            outcome = module.GraspFirstOrderedItemState().execute(userdata)
+
+        self.assertEqual(outcome, "success")
+        self.assertEqual(closed_set_mock.call_count, 5)
+        self.assertEqual(
+            rotate_mock.call_args_list,
+            [
+                call(reference_yaw, module.GRASP_SIDE_ENTRY_YAW_OFFSET_RAD),
+                call(reference_yaw, 0.0),
+                call(reference_yaw, 0.0),
+                call(reference_yaw, 0.0),
+                call(reference_yaw, 0.0),
+                call(reference_yaw, math.radians(module.GRASP_RETRY_YAW_OFFSETS_DEG[1])),
+                call(reference_yaw, math.radians(module.GRASP_RETRY_YAW_OFFSETS_DEG[2])),
+                call(reference_yaw, 0.0),
+                call(reference_yaw, 0.0),
+                call(reference_yaw, 0.0),
+                call(reference_yaw, module.GRASP_EXIT_YAW_OFFSET_RAD),
+            ],
+        )
 
     def test_drive_base_backward_after_grasp_should_use_tf_closed_loop_helper(self):
         module = load_module()
