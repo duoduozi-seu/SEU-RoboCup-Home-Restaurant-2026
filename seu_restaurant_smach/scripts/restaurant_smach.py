@@ -80,6 +80,12 @@ POST_WAVE_FORWARD_DISTANCE_M = 0
 NAV_TIMEOUT_SEC = 120.0
 STAND_OFF_DISTANCE_M = 1.0
 BAR_NAV_EXTENSION_DISTANCE_M = 0.5
+##修改膨胀点计算频率
+TASK_NAV_PROJECTION_REFRESH_PARAM = "/task_nav_server/projection_refresh_hz"
+TASK_NAV_DEFAULT_PROJECTION_REFRESH_HZ = 0.35
+NAV_TO_CUSTOMER_PROJECTION_REFRESH_HZ = 0.5        ##挥手后 nav 刷新频率
+OTHER_NAV_PROJECTION_REFRESH_HZ = 0.125
+##
 ALIGN_TIMEOUT_SEC = 20.0
 DIALOG_TIMEOUT_SEC = 5.0
 # 0 表示让 interaction 一直重试，直到成功、抢占或遇到硬错误。
@@ -675,6 +681,24 @@ def build_nav_goal_from_pose(pose: PoseStamped, pid_pose: PoseStamped = None) ->
     return goal
 
 
+@contextlib.contextmanager
+def temporary_task_nav_projection_refresh_hz(refresh_hz: float):
+    """临时覆盖 task_nav_server 的投影刷新频率，并在退出时恢复。"""
+    had_param = rospy.has_param(TASK_NAV_PROJECTION_REFRESH_PARAM)
+    previous_value = rospy.get_param(TASK_NAV_PROJECTION_REFRESH_PARAM) if had_param else None
+    rospy.set_param(TASK_NAV_PROJECTION_REFRESH_PARAM, float(refresh_hz))
+    try:
+        yield
+    finally:
+        if had_param:
+            rospy.set_param(TASK_NAV_PROJECTION_REFRESH_PARAM, previous_value)
+        else:
+            rospy.set_param(
+                TASK_NAV_PROJECTION_REFRESH_PARAM,
+                TASK_NAV_DEFAULT_PROJECTION_REFRESH_HZ,
+            )
+
+
 def say_once(text: str):
     """调用现有 TTS 服务播报一句话。"""
     rospy.wait_for_service(VOICE_SERVICE_NAME, timeout=2.0)
@@ -1079,13 +1103,19 @@ class BuildCustomerNavPoseState(smach.State):
 class NavigatePoseState(smach.State):
     """读取指定 userdata 位姿并执行导航。"""
 
-    def __init__(self, pose_key, pid_pose_key=None):
+    def __init__(
+        self,
+        pose_key,
+        pid_pose_key=None,
+        projection_refresh_hz=OTHER_NAV_PROJECTION_REFRESH_HZ,
+    ):
         input_keys = [pose_key]
         if pid_pose_key is not None:
             input_keys.append(pid_pose_key)
         smach.State.__init__(self, outcomes=["success", "failure"], input_keys=input_keys)
         self.pose_key = pose_key
         self.pid_pose_key = pid_pose_key
+        self.projection_refresh_hz = float(projection_refresh_hz)
 
     def execute(self, userdata):
         client = actionlib.SimpleActionClient(NAV_ACTION_NAME, RestaurantNavAction)
@@ -1094,12 +1124,13 @@ class NavigatePoseState(smach.State):
 
         pose = getattr(userdata, self.pose_key)
         pid_pose = getattr(userdata, self.pid_pose_key) if self.pid_pose_key is not None else None
-        for _ in range(2):
-            client.send_goal(build_nav_goal_from_pose(pose, pid_pose=pid_pose))
-            client.wait_for_result()
-            result = client.get_result()
-            if result is not None and result.success:
-                return "success"
+        with temporary_task_nav_projection_refresh_hz(self.projection_refresh_hz):
+            for _ in range(2):
+                client.send_goal(build_nav_goal_from_pose(pose, pid_pose=pid_pose))
+                client.wait_for_result()
+                result = client.get_result()
+                if result is not None and result.success:
+                    return "success"
 
         rospy.logerr("Navigation to pose '%s' failed.", self.pose_key)
         return "failure"
@@ -1108,24 +1139,26 @@ class NavigatePoseState(smach.State):
 class NavigateBackToStartPoseState(smach.State):
     """每服务完一人后，回到吧台外延导航点，并保持初始朝向。"""
 
-    def __init__(self):
+    def __init__(self, projection_refresh_hz=OTHER_NAV_PROJECTION_REFRESH_HZ):
         smach.State.__init__(
             self,
             outcomes=["success", "failure"],
             input_keys=["bar_final_nav_pose_map"],
         )
+        self.projection_refresh_hz = float(projection_refresh_hz)
 
     def execute(self, userdata):
         client = actionlib.SimpleActionClient(NAV_ACTION_NAME, RestaurantNavAction)
         if not client.wait_for_server(rospy.Duration(5.0)):
             return "failure"
 
-        for _ in range(2):
-            client.send_goal(build_nav_goal_from_pose(userdata.bar_final_nav_pose_map))
-            client.wait_for_result()
-            result = client.get_result()
-            if result is not None and result.success:
-                return "success"
+        with temporary_task_nav_projection_refresh_hz(self.projection_refresh_hz):
+            for _ in range(2):
+                client.send_goal(build_nav_goal_from_pose(userdata.bar_final_nav_pose_map))
+                client.wait_for_result()
+                result = client.get_result()
+                if result is not None and result.success:
+                    return "success"
 
         rospy.logerr("Navigation back to start pose failed.")
         return "failure"
@@ -1505,7 +1538,10 @@ def build_service_one_customer_state_machine():
         )
         smach.StateMachine.add(
             "NAV_TO_CUSTOMER",
-            NavigatePoseState("customer_nav_pose"),
+            NavigatePoseState(
+                "customer_nav_pose",
+                projection_refresh_hz=NAV_TO_CUSTOMER_PROJECTION_REFRESH_HZ,
+            ),
             transitions={"success": "ALIGN_AND_TAKE_ORDER", "failure": "failure"},
         )
         smach.StateMachine.add(
@@ -1515,7 +1551,11 @@ def build_service_one_customer_state_machine():
         )
         smach.StateMachine.add(
             "NAV_TO_BAR",
-            NavigatePoseState("bar_pose_map", pid_pose_key="bar_pid_pose_map"),
+            NavigatePoseState(
+                "bar_pose_map",
+                pid_pose_key="bar_pid_pose_map",
+                projection_refresh_hz=OTHER_NAV_PROJECTION_REFRESH_HZ,
+            ),
             transitions={"success": "SPEAK_ORDER_AT_BAR", "failure": "failure"},
         )
         smach.StateMachine.add(
@@ -1533,7 +1573,10 @@ def build_service_one_customer_state_machine():
         )
         smach.StateMachine.add(
             "NAV_BACK_TO_CUSTOMER",
-            NavigatePoseState("service_pose_map"),
+            NavigatePoseState(
+                "service_pose_map",
+                projection_refresh_hz=OTHER_NAV_PROJECTION_REFRESH_HZ,
+            ),
             transitions={"success": "FINAL_DELIVER_SPEAK", "failure": "failure"},
         )
         smach.StateMachine.add(
@@ -1543,7 +1586,9 @@ def build_service_one_customer_state_machine():
         )
         smach.StateMachine.add(
             "NAV_BACK_TO_START_POSE",
-            NavigateBackToStartPoseState(),
+            NavigateBackToStartPoseState(
+                projection_refresh_hz=OTHER_NAV_PROJECTION_REFRESH_HZ,
+            ),
             transitions={"success": "success", "failure": "failure"},
         )
 
