@@ -405,7 +405,21 @@ class AlignAndTakeOrderActionServer:
                 self.server.set_aborted(result, result.error_msg)
                 return
 
-            for round_index in range(max(1, int(goal.max_rounds))):
+            # max_rounds=0 表示无限重试；其余正数保持原来的有限轮次语义。
+            round_limit = max(0, int(getattr(goal, "max_rounds", 0)))
+            round_index = 0
+            while True:
+                if rospy.is_shutdown():
+                    return
+                if self.server.is_preempt_requested():
+                    self.server.set_preempted(result)
+                    return
+                if round_limit > 0 and round_index >= round_limit:
+                    result.error_msg = "failed to confirm the order within max rounds"
+                    self.server.set_aborted(result, result.error_msg)
+                    return
+
+                round_index += 1
                 self._say(goal.ask_text)
                 order_text = self._listen_once()
                 if not order_text:
@@ -456,13 +470,10 @@ class AlignAndTakeOrderActionServer:
                 result.order_text = order_text
                 result.orderlist = order_items
                 result.orderlist_num = order_item_counts
-                result.rounds_used = round_index + 1
+                result.rounds_used = min(round_index, 255)
                 result.service_pose_map = self.current_pose
                 self.server.set_succeeded(result)
                 return
-
-            result.error_msg = "failed to confirm the order within max rounds"
-            self.server.set_aborted(result, result.error_msg)
         except Exception as exc:
             self._stop_robot()
             result.error_msg = "align and take order failed: {}".format(exc)

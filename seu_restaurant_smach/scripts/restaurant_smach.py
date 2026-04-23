@@ -75,14 +75,15 @@ WAVE_TIMEOUT_SEC = 30.0
 #寻找挥手时旋转速度
 WAVE_ANGULAR_SPEED_RAD_S = 0.2
 #挥手后前进距离
-POST_WAVE_FORWARD_DISTANCE_M = 0.5
+POST_WAVE_FORWARD_DISTANCE_M = 0
 
 NAV_TIMEOUT_SEC = 120.0
 STAND_OFF_DISTANCE_M = 1.0
 BAR_NAV_EXTENSION_DISTANCE_M = 0.5
 ALIGN_TIMEOUT_SEC = 20.0
 DIALOG_TIMEOUT_SEC = 5.0
-ORDER_MAX_ROUNDS = 2
+# 0 表示让 interaction 一直重试，直到成功、抢占或遇到硬错误。
+ORDER_MAX_ROUNDS = 0
 ASK_ORDER_TEXT = "hello, What would you like to order, bro"
 ORDER_REPEAT_PREFIX = "The customer ordered "
 ORDER_REPEAT_SUFFIX = ", please give me them you know M sam"
@@ -120,7 +121,7 @@ GRASP_RETRY_LINEAR_SPEED_M_S = 0.10
 GRASP_RETRY_LINEAR_TOLERANCE_M = 0.01
 GRASP_RETRY_LINEAR_CONTROL_HZ = 20.0
 # 导航到吧台后的点云对距参数。
-BAR_DOCK_TARGET_DISTANCE_M = 0.4
+BAR_DOCK_TARGET_DISTANCE_M = 0.35 #距离吧台的距离
 BAR_DOCK_CLOUD_WAIT_TIMEOUT_SEC = 2.0
 BAR_DOCK_CLOUD_X_MIN_M = 0.26
 BAR_DOCK_CLOUD_X_MAX_M = 1.00
@@ -152,7 +153,7 @@ TRAY_ABOVE_JOINTS_RAD_OTHER = [1.605, 1.386, -0.908, 0.00, 1.191, -1.538]
 # 新增托盘位姿 2：另一个托盘的落放/取件位。
 TRAY_PICK_JOINTS_RAD_OTHER = [1.605, 1.703, -0.592, 0.0, 0.559, -1.538]
 # 位姿 3：最终把物品伸到顾客面前，再松开夹爪。
-DELIVER_EXTEND_JOINTS_RAD = [0.0, 1.491, -0.942, 0.0, -0.549, 0.0]
+DELIVER_EXTEND_JOINTS_RAD = [0.0, 2.407, -2.667, 0.0, 0.26, 0.0]
 
 # 夹爪在本状态机里只需要最简单的“张开/闭合”两个固定值。
 GRIPPER_OPEN_WIDTH_M = 0.095
@@ -1413,7 +1414,11 @@ class FinalDeliverSpeakState(smach.State):
                 getattr(userdata, "orderlist_num", []),
             )
 
-            # 交付阶段不再维护真实占用状态，只按数量列表总件数决定固定动作序列。
+            # 交付阶段只按数量列表总件数决定固定动作序列；
+            # 当有 3 件时，先直送夹爪中的第 3 件，再递交两个托盘中的物品。
+            if deliver_item_count >= 3:
+                deliver_item_from_gripper_once(controller=controller)
+
             if deliver_item_count >= 1:
                 deliver_item_from_tray_once(
                     TRAY_ABOVE_JOINTS_RAD,
@@ -1429,9 +1434,6 @@ class FinalDeliverSpeakState(smach.State):
                     description_prefix="other_tray",
                     controller=controller,
                 )
-
-            if deliver_item_count >= 3:
-                deliver_item_from_gripper_once(controller=controller)
 
             if deliver_item_count > 0:
                 move_arm_go_zero_once(controller=controller)

@@ -246,8 +246,8 @@ class AlignAndTakeOrderLlmFlowTest(unittest.TestCase):
         self.assertTrue(publish_log)
         self.assertTrue(all(getattr(msg.linear, "x", 0.0) == 0.0 for msg in publish_log))
 
-    def test_execute_cb_should_retry_whole_order_when_llm_returns_no_info(self):
-        """LLM 返回 no_info 时，应重新回到让主人说指令的流程。"""
+    def test_execute_cb_should_retry_whole_order_without_round_limit_when_llm_returns_no_info(self):
+        """max_rounds=0 时，LLM 返回 no_info 后应继续重试直到成功。"""
         FakeLlmActionClient.planned_results = [
             types.SimpleNamespace(success=False, error_msg='no_info', items=[]),
             types.SimpleNamespace(success=True, error_msg='', items=['cola_2', 'chips_1']),
@@ -256,7 +256,7 @@ class AlignAndTakeOrderLlmFlowTest(unittest.TestCase):
             'first unclear order', 'yes',
             'second clear order', 'yes',
         ])
-        goal = types.SimpleNamespace(ask_text='ask', max_rounds=2, align_timeout_sec=1.0, dialog_timeout_sec=1.0)
+        goal = types.SimpleNamespace(ask_text='ask', max_rounds=0, align_timeout_sec=1.0, dialog_timeout_sec=1.0)
 
         server.execute_cb(goal)
 
@@ -266,6 +266,52 @@ class AlignAndTakeOrderLlmFlowTest(unittest.TestCase):
         self.assertEqual(server.server.succeeded_result.orderlist, ['cola', 'chips'])
         self.assertEqual(server.server.succeeded_result.orderlist_num, [2, 1])
         self.assertEqual(server.server.succeeded_result.rounds_used, 2)
+
+    def test_execute_cb_should_abort_when_finite_round_limit_is_exhausted(self):
+        """max_rounds>0 时，仍应保留原来的有限轮次失败行为。"""
+        server = self.build_server([''])
+        goal = types.SimpleNamespace(ask_text='ask', max_rounds=1, align_timeout_sec=1.0, dialog_timeout_sec=1.0)
+
+        server.execute_cb(goal)
+
+        self.assertIsNone(server.server.succeeded_result)
+        self.assertIsNotNone(server.server.aborted_result)
+        self.assertEqual(
+            server.server.aborted_result.error_msg,
+            'failed to confirm the order within max rounds',
+        )
+
+    def test_execute_cb_should_allow_preempt_while_retrying_without_round_limit(self):
+        """max_rounds=0 时，外部 preempt 仍应能终止无限重试。"""
+        server = self.build_server([])
+
+        def listen_once():
+            server.server.preempt_requested = True
+            return ''
+
+        server._listen_once = listen_once
+        goal = types.SimpleNamespace(ask_text='ask', max_rounds=0, align_timeout_sec=1.0, dialog_timeout_sec=1.0)
+
+        server.execute_cb(goal)
+
+        self.assertIsNone(server.server.succeeded_result)
+        self.assertIsNone(server.server.aborted_result)
+        self.assertIsNotNone(server.server.preempted_result)
+
+    def test_execute_cb_should_cap_rounds_used_at_uint8_max_without_round_limit(self):
+        """无限重试成功时，rounds_used 应截断到 uint8 上限。"""
+        FakeLlmActionClient.planned_results = [
+            types.SimpleNamespace(success=True, error_msg='', items=['cola_1']),
+        ]
+        server = self.build_server(([''] * 255) + ['final order', 'yes'])
+        goal = types.SimpleNamespace(ask_text='ask', max_rounds=0, align_timeout_sec=1.0, dialog_timeout_sec=1.0)
+
+        server.execute_cb(goal)
+
+        self.assertIsNotNone(server.server.succeeded_result)
+        self.assertIsNone(server.server.aborted_result)
+        self.assertEqual(server.server.succeeded_result.order_text, 'final order')
+        self.assertEqual(server.server.succeeded_result.rounds_used, 255)
 
     def test_execute_cb_should_forward_closed_set_item_names_to_llm_goal(self):
         """interaction 应把上游闭集名单原样透传给 LLM goal。"""
