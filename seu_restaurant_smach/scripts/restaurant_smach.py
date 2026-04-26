@@ -21,6 +21,7 @@ import sys
 import time
 import contextlib
 import heapq
+import threading
 from pathlib import Path
 
 import actionlib
@@ -84,7 +85,7 @@ BAR_NAV_EXTENSION_DISTANCE_M = 0.5
 TASK_NAV_PROJECTION_REFRESH_PARAM = "/task_nav_server/projection_refresh_hz"
 TASK_NAV_DEFAULT_PROJECTION_REFRESH_HZ = 0.05
 NAV_TO_CUSTOMER_PROJECTION_REFRESH_HZ = 0.35        ##挥手后 nav 刷新频率
-OTHER_NAV_PROJECTION_REFRESH_HZ = 0.05
+OTHER_NAV_PROJECTION_REFRESH_HZ = 0.15
 ##
 ALIGN_TIMEOUT_SEC = 20.0
 DIALOG_TIMEOUT_SEC = 5.0
@@ -708,12 +709,28 @@ def say_once(text: str):
         raise RuntimeError("voice service failed: {}".format(response.errormsg))
 
 
+def say_async_once(text: str, label: str = "voice"):
+    """后台触发一次 TTS 播报；失败只记日志，不阻塞主状态机。"""
+    def _worker():
+        try:
+            say_once(text)
+        except Exception as exc:
+            rospy.logwarn("Async voice request failed (%s): %s", label, str(exc))
+
+    try:
+        thread = threading.Thread(
+            target=_worker,
+            name="restaurant_{}_thread".format(label),
+            daemon=True,
+        )
+        thread.start()
+    except Exception as exc:
+        rospy.logwarn("Failed to start async voice thread (%s): %s", label, str(exc))
+
+
 def say_post_grasp_request_once():
     """抓取状态结束后，统一提示补齐剩余物品。"""
-    try:
-        say_once(POST_GRASP_REQUEST_TEXT)
-    except Exception as exc:
-        rospy.logerr("Post-grasp prompt failed: %s", str(exc))
+    say_async_once(POST_GRASP_REQUEST_TEXT, "post_grasp_prompt")
 
 
 def set_gripper_width_once(width: float, controller=None):
@@ -916,7 +933,7 @@ def get_tf_buffer():
     """懒加载 TF 监听器。"""
     global _TF_BUFFER, _TF_LISTENER
     if _TF_BUFFER is None:
-        _TF_BUFFER = tf2_ros.Buffer()
+        _TF_BUFFER = tf2_ros.Buffer(debug=False)
         _TF_LISTENER = tf2_ros.TransformListener(_TF_BUFFER)
     return _TF_BUFFER
 
@@ -1224,7 +1241,7 @@ class SpeakOrderAtBarState(smach.State):
                 getattr(userdata, "orderlist_num", []),
                 getattr(userdata, "order_text", ""),
             )
-            say_once(repeat_text)
+            say_async_once(repeat_text, "bar_order_repeat")
             return "success"
         except Exception:
             return "failure"
@@ -1441,7 +1458,7 @@ class FinalDeliverSpeakState(smach.State):
 
     def execute(self, userdata):
         try:
-            say_once(FINAL_DELIVER_TEXT)
+            say_async_once(FINAL_DELIVER_TEXT, "final_deliver_prompt")
             controller = get_piper_deliver_controller()
             deliver_item_count = count_delivery_item_count_from_order_num(
                 getattr(userdata, "orderlist_num", []),
