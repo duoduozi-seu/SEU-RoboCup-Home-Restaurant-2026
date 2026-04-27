@@ -162,6 +162,8 @@ TRAY_PICK_JOINTS_RAD_OTHER = [1.605, 1.703, -0.592, 0.0, 0.559, -1.538]
 # 位姿 3：最终把物品伸到顾客面前，再松开夹爪。
 DELIVER_EXTEND_JOINTS_RAD = [0.0, 2.407, -2.667, 0.0, 0.26, 0.0]
 
+# 位姿 4：向吧台索要不能抓取的剩下的物品
+ASK_FOR_REST_JOINTS_RAD = [1.605, 2.407, -2.667, 0.0, 0.26, 0.0]
 # 夹爪在本状态机里只需要最简单的“张开/闭合”两个固定值。
 GRIPPER_OPEN_WIDTH_M = 0.095
 GRIPPER_CLOSE_WIDTH_M = 0.0
@@ -848,6 +850,41 @@ def place_item_on_tray_once(tray_above_joints_rad, tray_pick_joints_rad, descrip
     move_arm_go_zero_once(controller=controller)
 
 
+def take_rest_item_from_bar_once(storage_target, controller=None):
+    """在位姿 4 接收人工递来的单件物品，并按既有顺序放入托盘或留在夹爪。"""
+    controller = get_piper_deliver_controller() if controller is None else controller
+    clean_storage_target = str(storage_target or "skip")
+    move_arm_to_joint_positions_once(
+        ASK_FOR_REST_JOINTS_RAD,
+        description="manual_refill_pose4_ask",
+        controller=controller,
+    )
+    release_gripper_once(controller=controller)
+    rospy.sleep(2.0)
+    set_gripper_width_once(GRIPPER_CLOSE_WIDTH_M, controller=controller)
+
+    if clean_storage_target == "main_tray":
+        place_item_on_tray_once(
+            TRAY_ABOVE_JOINTS_RAD,
+            TRAY_PICK_JOINTS_RAD,
+            description_prefix="main_tray",
+            controller=controller,
+        )
+        return
+
+    if clean_storage_target == "other_tray":
+        place_item_on_tray_once(
+            TRAY_ABOVE_JOINTS_RAD_OTHER,
+            TRAY_PICK_JOINTS_RAD_OTHER,
+            description_prefix="other_tray",
+            controller=controller,
+        )
+        return
+
+    if clean_storage_target != "gripper":
+        rospy.logwarn("Manual refill storage target skipped: %s", clean_storage_target)
+
+
 def deliver_item_from_tray_once(tray_above_joints_rad, tray_pick_joints_rad, description_prefix, controller=None):
     """从指定托盘取出一件物品并送到顾客面前。"""
     controller = get_piper_deliver_controller() if controller is None else controller
@@ -1265,6 +1302,7 @@ class GraspFirstOrderedItemState(smach.State):
         runtime = None
         grasp_reference_pose = None
         grasp_reference_yaw = None
+        successful_grasp_count = 0
 
         try:
             try:
@@ -1299,7 +1337,6 @@ class GraspFirstOrderedItemState(smach.State):
                 return "success"
 
             runtime = get_grasp_runtime()
-            successful_grasp_count = 0
             successful_item_indexes = set()
 
             linear_offsets = (
@@ -1402,10 +1439,44 @@ class GraspFirstOrderedItemState(smach.State):
         except Exception as exc:
             rospy.logwarn("Closed-set grasp failed: %s", str(exc))
         finally:
-            say_post_grasp_request_once()
-            if runtime is not None:
+            cleanup_controller = runtime.controller if runtime is not None else None
+            if successful_grasp_count < target_item_count:
                 try:
-                    move_arm_go_zero_once(controller=runtime.controller)
+                    say_post_grasp_request_once()
+                    refill_controller = cleanup_controller
+                    if refill_controller is None:
+                        refill_controller = get_piper_deliver_controller()
+                    cleanup_controller = refill_controller
+
+                    while successful_grasp_count < target_item_count:
+                        next_successful_grasp_count = successful_grasp_count + 1
+                        storage_target = get_post_grasp_storage_target(
+                            target_item_count,
+                            next_successful_grasp_count,
+                        )
+                        if storage_target == "skip":
+                            break
+
+                        rospy.loginfo(
+                            "Post-grasp manual refill item %d/%d -> %s",
+                            next_successful_grasp_count,
+                            target_item_count,
+                            storage_target,
+                        )
+                        take_rest_item_from_bar_once(
+                            storage_target,
+                            controller=refill_controller,
+                        )
+                        successful_grasp_count = next_successful_grasp_count
+
+                        if storage_target == "gripper":
+                            break
+                except Exception as exc:
+                    rospy.logwarn("Post-grasp manual refill failed: %s", str(exc))
+
+            if cleanup_controller is not None:
+                try:
+                    move_arm_go_zero_once(controller=cleanup_controller)
                 except Exception as exc:
                     rospy.logwarn("Post-grasp arm go-zero failed: %s", str(exc))
 
