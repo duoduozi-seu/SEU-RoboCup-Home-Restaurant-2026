@@ -84,18 +84,18 @@ BAR_NAV_EXTENSION_DISTANCE_M = 0.5
 ##修改膨胀点计算频率
 TASK_NAV_PROJECTION_REFRESH_PARAM = "/task_nav_server/projection_refresh_hz"
 TASK_NAV_DEFAULT_PROJECTION_REFRESH_HZ = 0.05
-NAV_TO_CUSTOMER_PROJECTION_REFRESH_HZ = 0.35        ##挥手后 nav 刷新频率
+NAV_TO_CUSTOMER_PROJECTION_REFRESH_HZ = 0.4        ##挥手后 nav 刷新频率
 OTHER_NAV_PROJECTION_REFRESH_HZ = 0.15
 ##
 ALIGN_TIMEOUT_SEC = 20.0
 DIALOG_TIMEOUT_SEC = 5.0
 # 0 表示让 interaction 一直重试，直到成功、抢占或遇到硬错误。
 ORDER_MAX_ROUNDS = 0
-ASK_ORDER_TEXT = "hello, What would you like to order, bro"
+ASK_ORDER_TEXT = "hello, What would you like to order."
 ORDER_REPEAT_PREFIX = "The customer ordered "
-ORDER_REPEAT_SUFFIX = ", please give me them you know M sam"
-FINAL_DELIVER_TEXT = "I am back. Please take your order. Enjoy your meal bro."
-POST_GRASP_REQUEST_TEXT = "please give me the rest things bro"
+ORDER_REPEAT_SUFFIX = ", please give me them."
+FINAL_DELIVER_TEXT = "I am back. Please take your order. Enjoy your meal."
+POST_GRASP_REQUEST_TEXT = "please give me the rest things"
 GRASP_CATEGORY = "bottle.objects."
 GRASP_PROFILE_BUNDLE_PATH = ""
 GRASP_CONDA_EXE = "conda"
@@ -109,7 +109,7 @@ GRASP_WARM_START_REQUIRED_SERVICES = (
     "joint_moveit_ctrl_arm",
     "joint_moveit_ctrl_gripper",
 )
-CLOSED_SET_ITEM_NAME_LIST = ["cola", "chips", "water", "drink", "milk", "alien", "yunimilk"]
+CLOSED_SET_ITEM_NAME_LIST = ["cola", "water", "biscuit", "cookie", "orange", "sprite","lays"]
 
 # 抓取旋转寻找参数
 # 餐厅任务现在只允许一次最多抓 3 件“实际物品”，不是 3 个名称。
