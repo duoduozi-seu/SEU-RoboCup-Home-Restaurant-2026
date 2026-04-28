@@ -70,25 +70,25 @@ Strict rules:
 15. Do not invent unusual interpretations. If the intended item is still unclear after reasonable ASR correction, output [] or ignore only the unclear object.
 16. The user may say simple sentences like "i want xxx and xxx", "please give me xxx", or "can i have two xxx and one yyy".
 
-Output only one JSON array, for example: ["cola_2", "chips_1", "mineral water_1"]"""
+Output only one JSON array, for example: ["cola_2", "chips_1", "water_1"]"""
 
 # few-shot prompt：直接给模型示范输入和目标输出风格。
 ORDER_PARSE_FEW_SHOT_PROMPT = """[Few-shot examples]
-Customer: i want a bottle of cola and a bag of chips and a bottle of mineral water
-Closed-set canonical item names: ["cola", "chips", "mineral water", "cookie"]
-Output: ["cola_1", "chips_1", "mineral water_1"]
+Customer: i want a bottle of cola and a bag of chips and a bottle of water
+Closed-set canonical item names: ["cola", "chips", "water", "cookie"]
+Output: ["cola_1", "chips_1", "water_1"]
 
 Customer: please give me two bottles of water and one cookie
-Closed-set canonical item names: ["water", "cookie", "orange juice"]
+Closed-set canonical item names: ["water", "cookie", "orange"]
 Output: ["water_2", "cookie_1"]
 
-Customer: can i have orange juice and a pack of crackers
-Closed-set canonical item names: ["orange juice", "crackers", "bread"]
-Output: ["orange juice_1", "crackers_1"]
+Customer: can i have orange and a pack of crackers
+Closed-set canonical item names: ["orange", "crackers", "bread"]
+Output: ["orange_1", "crackers_1"]
 
-Customer: i would like bread, chocolate milk and apple juice
-Closed-set canonical item names: ["bread", "chocolate milk", "apple juice"]
-Output: ["bread_1", "chocolate milk_1", "apple juice_1"]
+Customer: i would like bread, milk and apple
+Closed-set canonical item names: ["bread", "milk", "apple"]
+Output: ["bread_1", "milk_1", "apple_1"]
 
 Customer: i want cola and one more cola and two chips
 Closed-set canonical item names: ["cola", "chips", "bread"]
