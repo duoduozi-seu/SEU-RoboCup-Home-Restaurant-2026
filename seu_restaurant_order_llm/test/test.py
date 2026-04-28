@@ -7,7 +7,7 @@ import sys
 import time
 
 
-TEST_ORDER_TEXT = "i want a colr and aoter,and a orange"
+TEST_ORDER_TEXT = "i want a colr and otor,and a orange"
 
 SCRIPT_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),

@@ -20,7 +20,7 @@ QWEN_API_KEY_ENV = "DASHSCOPE_API_KEY"
 # Put your DashScope API key here if you want it hard-coded, for example:
 # QWEN_API_KEY = "sk-xxxxxxxx"
 QWEN_API_KEY = "sk-75cad65b35904a9abf38f3f7a0612485"
-QWEN_MODEL = "qwen-max"
+QWEN_MODEL = "qwen3.6-max-preview"
 HTTP_TIMEOUT_SEC = 60
 QWEN_ENABLE_THINKING = False
 QWEN_STREAM = True
