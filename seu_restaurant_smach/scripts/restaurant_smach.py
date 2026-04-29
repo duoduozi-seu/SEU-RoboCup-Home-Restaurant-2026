@@ -109,7 +109,7 @@ GRASP_WARM_START_REQUIRED_SERVICES = (
     "joint_moveit_ctrl_arm",
     "joint_moveit_ctrl_gripper",
 )
-CLOSED_SET_ITEM_NAME_LIST = ["cola", "water", "biscuit", "cookie", "orange", "sprite","lays"]
+CLOSED_SET_ITEM_NAME_LIST = ["cola", "water", "biscuit", "cookie", "orange", "sprite", "lays", "bread"]
 
 # 抓取旋转寻找参数
 # 餐厅任务现在只允许一次最多抓 3 件“实际物品”，不是 3 个名称。

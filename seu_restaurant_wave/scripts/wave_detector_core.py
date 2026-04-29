@@ -31,7 +31,8 @@ DEPTH_SAMPLE_RADIUS = 6
 DEPTH_FILTER_WINDOW = 5
 SIMPLE_RAISE_REQUIRED_FRAMES = 10
 SIMPLE_RAISE_MARGIN_SHOULDER_WIDTH = 0.10
-DEPTH_CENTER_BOX_Y_RATIO = 0.55
+DEPTH_CENTER_BOX_Y_RATIO = 0.45
+SHOULDER_DEPTH_Y_OFFSET_PX = 10
 
 KEYPOINT_INDEX = {
     "left_shoulder": 5,
@@ -342,27 +343,22 @@ class WaveDetectorRuntime:
 
     @staticmethod
     def _compute_depth_center(person_box, point_map):
-        """优先在躯干中部采样深度，减少头肩边缘抖动。"""
+        """优先在两肩中点下方采样深度，适配桌前上半身可见场景。"""
         left_shoulder = point_map["left_shoulder"]
         right_shoulder = point_map["right_shoulder"]
-        left_hip = point_map["left_hip"]
-        right_hip = point_map["right_hip"]
 
         shoulder_points = [point for point in (left_shoulder, right_shoulder) if point[2] > KEYPOINT_VISIBILITY]
-        hip_points = [point for point in (left_hip, right_hip) if point[2] > KEYPOINT_VISIBILITY]
 
         box_center_x = (person_box[0] + person_box[2]) // 2
         box_center_y = int(person_box[1] + (person_box[3] - person_box[1]) * DEPTH_CENTER_BOX_Y_RATIO)
 
-        if len(shoulder_points) == 2 and len(hip_points) == 2:
+        if len(shoulder_points) == 2:
             shoulder_center_x = sum(point[0] for point in shoulder_points) / 2.0
             shoulder_center_y = sum(point[1] for point in shoulder_points) / 2.0
-            hip_center_x = sum(point[0] for point in hip_points) / 2.0
-            hip_center_y = sum(point[1] for point in hip_points) / 2.0
-            return int((shoulder_center_x + hip_center_x) / 2.0), int((shoulder_center_y + hip_center_y) / 2.0)
+            return int(shoulder_center_x), int(shoulder_center_y + SHOULDER_DEPTH_Y_OFFSET_PX)
 
-        if len(hip_points) == 2:
-            return int(sum(point[0] for point in hip_points) / 2.0), int(sum(point[1] for point in hip_points) / 2.0)
+        if len(shoulder_points) == 1:
+            return box_center_x, int(shoulder_points[0][1] + SHOULDER_DEPTH_Y_OFFSET_PX)
 
         return box_center_x, box_center_y
 
