@@ -20,6 +20,7 @@ if DEVEL_PYTHON_DIR not in sys.path:
     sys.path.insert(0, DEVEL_PYTHON_DIR)
 
 from find_waving_customer_action_server import (
+    CAMERA_BACKWARD_BIAS_M,
     MARKER_NS,
     MARKER_TOPIC,
     base_link_point_to_map_point,
@@ -141,10 +142,10 @@ class WaveGeometryTest(unittest.TestCase):
         self.assertGreater(int(rendered.sum()), 0)
 
     def test_camera_point_to_base_link_point_applies_backward_camera_bias(self):
-        """相机后移 60cm 时，base_link x 应额外叠加该后移偏置。"""
+        """base_link x 应额外叠加当前配置的相机前后偏置。"""
         base_link_point = camera_point_to_base_link_point((0.2, -0.1, 1.5))
 
-        self.assertAlmostEqual(base_link_point[0], 0.9)
+        self.assertAlmostEqual(base_link_point[0], 1.5 + CAMERA_BACKWARD_BIAS_M)
         self.assertAlmostEqual(base_link_point[1], -0.2)
         self.assertAlmostEqual(base_link_point[2], 0.1)
 

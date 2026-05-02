@@ -35,7 +35,8 @@ MARKER_TOPIC = "/restaurant_wave/target_marker"
 MARKER_NS = "restaurant_wave_target"
 DEFAULT_CAMERA_FRAME = "camera1_color_optical_frame"
 DEFAULT_RATE_HZ = 10.0
-CAMERA_BACKWARD_BIAS_M = -1.72  
+# realsense坐标偏移
+CAMERA_BACKWARD_BIAS_M = -0.85
 SAME_PERSON_DISTANCE_M = 0.40
 DEFAULT_SWING_TIMEOUT_SEC = 30.0
 # 旋转幅度

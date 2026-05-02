@@ -19,8 +19,10 @@ POSE_MODEL_PATH = '/home/duo/GPSR_ws_zyd/res_demo/yolo26m-pose.pt'
 
 FRAME_WIDTH = 1280
 FRAME_HEIGHT = 720
+DEPTH_FRAME_WIDTH = 1024
+DEPTH_FRAME_HEIGHT = 768
 FRAME_FPS = 30
-WAVE_CAMERA_SERIAL_NO = "346122072691"
+WAVE_CAMERA_SERIAL_NO = "f0244552"
 POSE_IMGSZ = 1280
 POSE_CONF = 0.35
 POSE_IOU = 0.45
@@ -218,7 +220,7 @@ class WaveDetectorRuntime:
         self.pipeline = rs.pipeline()
         config = rs.config()
         config.enable_device(WAVE_CAMERA_SERIAL_NO)
-        config.enable_stream(rs.stream.depth, FRAME_WIDTH, FRAME_HEIGHT, rs.format.z16, FRAME_FPS)
+        config.enable_stream(rs.stream.depth, DEPTH_FRAME_WIDTH, DEPTH_FRAME_HEIGHT, rs.format.z16, FRAME_FPS)
         config.enable_stream(rs.stream.color, FRAME_WIDTH, FRAME_HEIGHT, rs.format.bgr8, FRAME_FPS)
         self.align_to_color = rs.align(rs.stream.color)
         self.spatial_filter = rs.spatial_filter()

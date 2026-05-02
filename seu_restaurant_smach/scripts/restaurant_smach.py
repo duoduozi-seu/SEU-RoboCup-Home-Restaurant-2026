@@ -73,6 +73,8 @@ ROBOT_BASE_FRAME = "base_link"
 TARGET_CUSTOMER_COUNT = 2
 MAX_CUSTOMERS_PER_SCAN = 2
 WAVE_TIMEOUT_SEC = 30.0
+#寻找挥手时的机械臂位姿
+FIND_WAVE_JOINTS_RAD = [0.002692321663136255, 0.3812325463893324, -1.0920465612766153, 0.0003512753742491767, 0.5623855044293165, -0.015295193853610979]
 #寻找挥手时旋转速度
 WAVE_ANGULAR_SPEED_RAD_S = 0.1
 #挥手后前进距离
@@ -104,6 +106,8 @@ GRASP_ENV_NAME = "/home/duo/anaconda3/envs/GraspGen/bin/python"
 GRASP_CAMERA_SERIAL_NO = "f0244552"
 GRASP_CAMERA_VISUAL_PRESET = 5
 GRASP_CAMERA_WARMUP_FRAMES = 30
+GRASP_CAMERA_START_RETRY_COUNT = 3
+GRASP_CAMERA_START_RETRY_SLEEP_SEC = 0.5
 GRASP_WARM_START_SERVICE_TIMEOUT_SEC = 30.0
 GRASP_WARM_START_REQUIRED_SERVICES = (
     "joint_moveit_ctrl_arm",
@@ -239,8 +243,46 @@ def get_grasp_runtime():
         camera_serial_no=GRASP_CAMERA_SERIAL_NO,
         camera_visual_preset=GRASP_CAMERA_VISUAL_PRESET,
         camera_warmup_frames=GRASP_CAMERA_WARMUP_FRAMES,
+        start_camera=False,
     )
     return _GRASP_RUNTIME
+
+
+def start_grasp_realsense_runtime():
+    """Start only the grasp RealSense camera, keeping the hot-started runtime alive."""
+    runtime = get_grasp_runtime()
+    camera = getattr(runtime, "camera", None)
+    if camera is None:
+        raise RuntimeError("grasp runtime has no RealSense camera handle")
+
+    last_exc = None
+    for attempt_index in range(GRASP_CAMERA_START_RETRY_COUNT):
+        try:
+            camera.start()
+            return runtime
+        except Exception as exc:
+            last_exc = exc
+            rospy.logwarn(
+                "Failed to start grasp RealSense camera (%d/%d): %s",
+                attempt_index + 1,
+                GRASP_CAMERA_START_RETRY_COUNT,
+                str(exc),
+            )
+            if attempt_index + 1 < GRASP_CAMERA_START_RETRY_COUNT:
+                rospy.sleep(GRASP_CAMERA_START_RETRY_SLEEP_SEC)
+
+    raise RuntimeError("failed to start grasp RealSense camera: {}".format(last_exc))
+
+
+def release_grasp_realsense_runtime():
+    """Release only the grasp RealSense camera; keep runner/controller warm."""
+    if _GRASP_RUNTIME is None:
+        return
+    camera = getattr(_GRASP_RUNTIME, "camera", None)
+    if camera is None:
+        return
+    with contextlib.suppress(Exception):
+        camera.close()
 
 
 def hot_start_grasp_runtime():
@@ -793,6 +835,25 @@ def move_arm_go_zero_once(is_mit_mode: bool = False, controller=None):
     move_arm_to_named_pose_once("zero", controller=controller)
 
 
+def move_arm_go_zero_async(label: str = "arm_go_zero"):
+    """后台触发一次机械臂回零；失败只记日志，不阻塞主状态机。"""
+    def _worker():
+        try:
+            move_arm_go_zero_once()
+        except Exception as exc:
+            rospy.logwarn("Async arm go-zero failed (%s): %s", label, str(exc))
+
+    try:
+        thread = threading.Thread(
+            target=_worker,
+            name="restaurant_{}_thread".format(label),
+            daemon=True,
+        )
+        thread.start()
+    except Exception as exc:
+        rospy.logwarn("Failed to start async arm go-zero thread (%s): %s", label, str(exc))
+
+
 def count_delivery_item_count_from_order_num(orderlist_num):
     """交付阶段只按数量列表求总件数，并截断到本任务允许的最大值。"""
     total_item_count = 0
@@ -1035,50 +1096,59 @@ class FindWavingCustomersState(smach.State):
         smach.State.__init__(self, outcomes=["success", "failure"], output_keys=["detected_customer_points"])
 
     def execute(self, userdata):
-        client = actionlib.SimpleActionClient(WAVE_ACTION_NAME, FindWavingCustomerAction)
-        if not client.wait_for_server(rospy.Duration(5.0)):
-            rospy.logerr("[%s] Action server for wave search NOT found!", WAVE_ACTION_NAME)
-            return "failure"
-
-        for _ in range(2):
-            goal = FindWavingCustomerGoal(
-                timeout_sec=WAVE_TIMEOUT_SEC,
-                angular_speed_rad_s=WAVE_ANGULAR_SPEED_RAD_S,
-            )
-            client.send_goal(goal)
-            client.wait_for_result()
-            result = client.get_result()
-
-            if result is None or not result.success:
-                continue
-
-            person_points = list(getattr(result, "person_points_map", []))
-            if not person_points:
-                continue
-
-            detected_customer_points = person_points[:MAX_CUSTOMERS_PER_SCAN]
-            userdata.detected_customer_points = detected_customer_points
+        try:
             try:
-                post_wave_reference_pose = lookup_robot_pose(timeout_sec=2.0)
-                if not move_base_to_reference_forward_offset(
-                    post_wave_reference_pose,
-                    POST_WAVE_FORWARD_DISTANCE_M,
-                    linear_speed_m_s=GRASP_RETRY_LINEAR_SPEED_M_S,
-                    tolerance_m=GRASP_RETRY_LINEAR_TOLERANCE_M,
-                    control_hz=GRASP_RETRY_LINEAR_CONTROL_HZ,
-                    stage_label="post_wave_forward",
-                ):
-                    rospy.logwarn("Post-wave forward move did not reach target offset.")
+                move_arm_to_joint_positions_once(FIND_WAVE_JOINTS_RAD, description="find_wave")
             except Exception as exc:
-                rospy.logwarn("Post-wave forward move skipped: %s", str(exc))
-            rospy.loginfo(
-                "Found %d waving customer(s) in current scan.",
-                len(detected_customer_points),
-            )
-            return "success"
+                rospy.logerr("Failed to move arm to find-wave pose: %s", str(exc))
+                return "failure"
 
-        rospy.logwarn("Failed to find waving customer after multiple attempts.")
-        return "failure"
+            client = actionlib.SimpleActionClient(WAVE_ACTION_NAME, FindWavingCustomerAction)
+            if not client.wait_for_server(rospy.Duration(5.0)):
+                rospy.logerr("[%s] Action server for wave search NOT found!", WAVE_ACTION_NAME)
+                return "failure"
+
+            for _ in range(2):
+                goal = FindWavingCustomerGoal(
+                    timeout_sec=WAVE_TIMEOUT_SEC,
+                    angular_speed_rad_s=WAVE_ANGULAR_SPEED_RAD_S,
+                )
+                client.send_goal(goal)
+                client.wait_for_result()
+                result = client.get_result()
+
+                if result is None or not result.success:
+                    continue
+
+                person_points = list(getattr(result, "person_points_map", []))
+                if not person_points:
+                    continue
+
+                detected_customer_points = person_points[:MAX_CUSTOMERS_PER_SCAN]
+                userdata.detected_customer_points = detected_customer_points
+                try:
+                    post_wave_reference_pose = lookup_robot_pose(timeout_sec=2.0)
+                    if not move_base_to_reference_forward_offset(
+                        post_wave_reference_pose,
+                        POST_WAVE_FORWARD_DISTANCE_M,
+                        linear_speed_m_s=GRASP_RETRY_LINEAR_SPEED_M_S,
+                        tolerance_m=GRASP_RETRY_LINEAR_TOLERANCE_M,
+                        control_hz=GRASP_RETRY_LINEAR_CONTROL_HZ,
+                        stage_label="post_wave_forward",
+                    ):
+                        rospy.logwarn("Post-wave forward move did not reach target offset.")
+                except Exception as exc:
+                    rospy.logwarn("Post-wave forward move skipped: %s", str(exc))
+                rospy.loginfo(
+                    "Found %d waving customer(s) in current scan.",
+                    len(detected_customer_points),
+                )
+                return "success"
+
+            rospy.logwarn("Failed to find waving customer after multiple attempts.")
+            return "failure"
+        finally:
+            move_arm_go_zero_async("find_wave_go_zero")
 
 
 class LoadCustomerQueueState(smach.State):
@@ -1121,7 +1191,14 @@ class SelectNextCustomerState(smach.State):
         if not pending_customer_points:
             return "failure"
 
-        userdata.customer_point_map = pending_customer_points.pop(0)
+        customer_point_map = pending_customer_points.pop(0)
+        try:
+            start_grasp_realsense_runtime()
+        except Exception as exc:
+            rospy.logerr("Failed to warm-start grasp RealSense before serving customer: %s", str(exc))
+            return "failure"
+
+        userdata.customer_point_map = customer_point_map
         userdata.pending_customer_points = pending_customer_points
         return "success"
 
@@ -1333,7 +1410,7 @@ class GraspFirstOrderedItemState(smach.State):
                     rospy.logwarn("Closed-set grasp failed: %s", target_item_name)
                 return "success"
 
-            runtime = get_grasp_runtime()
+            runtime = start_grasp_realsense_runtime()
             successful_item_indexes = set()
 
             linear_offsets = (
@@ -1510,6 +1587,8 @@ class GraspFirstOrderedItemState(smach.State):
                     )
                 except Exception as exc:
                     rospy.logwarn("Post-grasp exit base motion failed: %s", str(exc))
+
+            release_grasp_realsense_runtime()
 
         return "success"
 

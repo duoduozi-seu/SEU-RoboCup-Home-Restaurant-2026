@@ -102,6 +102,7 @@ def _make_module(name, **attrs):
 def load_module():
     FakeActionClient.instances = []
     FakeActionClient.next_result = None
+    fake_params = {}
 
     def fake_time(*args, **kwargs):
         del args, kwargs
@@ -123,6 +124,9 @@ def load_module():
         loginfo=lambda *args, **kwargs: None,
         logwarn=lambda *args, **kwargs: None,
         logerr=lambda *args, **kwargs: None,
+        has_param=lambda name: name in fake_params,
+        get_param=lambda name, default=None: fake_params.get(name, default),
+        set_param=lambda name, value: fake_params.__setitem__(name, value),
         init_node=lambda *args, **kwargs: None,
         sleep=lambda *args, **kwargs: None,
         is_shutdown=lambda: False,
@@ -292,9 +296,9 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
             ],
             3: [
                 ("say", module.FINAL_DELIVER_TEXT),
+                ("gripper",),
                 ("tray", "main_tray"),
                 ("tray", "other_tray"),
-                ("gripper",),
                 ("zero",),
             ],
         }
@@ -349,6 +353,26 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
             ],
         )
         get_grasp_runtime_mock.assert_called_once_with()
+
+    def test_get_grasp_runtime_should_hot_start_without_starting_camera(self):
+        module = load_module()
+        captured_kwargs = {}
+        runtime = types.SimpleNamespace(name="runtime")
+
+        def fake_boot_runtime(**kwargs):
+            captured_kwargs.update(kwargs)
+            return runtime
+
+        module._GRASP_BOOT_RUNTIME = fake_boot_runtime
+        module._GRASP_SHUTDOWN_RUNTIME = lambda runtime: None
+        module._GRASP_BOTTLE = lambda *args, **kwargs: None
+        module._GRASP_BOTTLE_CLOSED_SET = lambda *args, **kwargs: None
+
+        result = module.get_grasp_runtime()
+
+        self.assertIs(result, runtime)
+        self.assertFalse(captured_kwargs["start_camera"])
+        self.assertEqual(captured_kwargs["camera_serial_no"], module.GRASP_CAMERA_SERIAL_NO)
 
     def test_main_should_hot_start_grasp_runtime_before_building_state_machine(self):
         module = load_module()
@@ -460,6 +484,7 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
         userdata = types.SimpleNamespace(orderlist=["Cola", "Lays", "Water"], orderlist_num=[1, 1, 1])
         fail = types.SimpleNamespace(success=False, status="failed", candidate_index=-1, message="")
         success = types.SimpleNamespace(success=True, status="success", candidate_index=0, message="")
+        expected_gdino_prompt = module.GRASP_CATEGORY
 
         with patch.object(module, "lookup_robot_pose", return_value=reference_pose), patch.object(
             module,
@@ -474,7 +499,7 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
             return_value=True,
         ) as linear_move_mock, patch.object(
             module,
-            "get_grasp_runtime",
+            "start_grasp_realsense_runtime",
             return_value=runtime,
         ), patch.object(
             module,
@@ -499,12 +524,12 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
         self.assertEqual(
             closed_set_mock.call_args_list,
             [
-                call(runtime, target_prompt="cola", gdino_prompt="cola.lays.water."),
-                call(runtime, target_prompt="lays", gdino_prompt="cola.lays.water."),
-                call(runtime, target_prompt="water", gdino_prompt="cola.lays.water."),
-                call(runtime, target_prompt="cola", gdino_prompt="cola.lays.water."),
-                call(runtime, target_prompt="water", gdino_prompt="cola.lays.water."),
-                call(runtime, target_prompt="water", gdino_prompt="cola.lays.water."),
+                call(runtime, target_prompt="cola", gdino_prompt=expected_gdino_prompt),
+                call(runtime, target_prompt="lays", gdino_prompt=expected_gdino_prompt),
+                call(runtime, target_prompt="water", gdino_prompt=expected_gdino_prompt),
+                call(runtime, target_prompt="cola", gdino_prompt=expected_gdino_prompt),
+                call(runtime, target_prompt="water", gdino_prompt=expected_gdino_prompt),
+                call(runtime, target_prompt="water", gdino_prompt=expected_gdino_prompt),
             ],
         )
         self.assertEqual(
@@ -513,8 +538,10 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
                 call(reference_yaw, module.GRASP_SIDE_ENTRY_YAW_OFFSET_RAD),
                 call(reference_yaw, 0.0),
                 call(reference_yaw, 0.0),
-                call(reference_yaw, math.radians(module.GRASP_RETRY_YAW_OFFSETS_DEG[1])),
-                call(reference_yaw, math.radians(module.GRASP_RETRY_YAW_OFFSETS_DEG[2])),
+                call(reference_yaw, 0.0),
+                call(reference_yaw, 0.0),
+                call(reference_yaw, 0.0),
+                call(reference_yaw, 0.0),
                 call(reference_yaw, 0.0),
                 call(reference_yaw, module.GRASP_EXIT_YAW_OFFSET_RAD),
             ],
@@ -525,7 +552,13 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
         )
         self.assertEqual(
             [call_args.args[1] for call_args in linear_move_mock.call_args_list],
-            [0.0, 0.0, module.GRASP_EXIT_FORWARD_DISTANCE_M],
+            [
+                0.0,
+                module.GRASP_RETRY_LINEAR_TARGET_OFFSETS_M[1],
+                module.GRASP_RETRY_LINEAR_TARGET_OFFSETS_M[2],
+                0.0,
+                module.GRASP_EXIT_FORWARD_DISTANCE_M,
+            ],
         )
         go_zero_mock.assert_called_once_with(controller=runtime.controller)
         drive_back_mock.assert_not_called()
@@ -554,7 +587,7 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
             return_value=True,
         ) as linear_move_mock, patch.object(
             module,
-            "get_grasp_runtime",
+            "start_grasp_realsense_runtime",
             return_value=runtime,
         ), patch.object(
             module,
@@ -601,7 +634,7 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
             return_value=True,
         ), patch.object(
             module,
-            "get_grasp_runtime",
+            "start_grasp_realsense_runtime",
             return_value=runtime,
         ), patch.object(
             module,
@@ -665,17 +698,34 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
         )
         userdata = types.SimpleNamespace()
         reference_pose = types.SimpleNamespace(name="reference_pose")
+        event_log = []
 
         with patch.object(module, "lookup_robot_pose", return_value=reference_pose) as lookup_mock, patch.object(
             module,
             "move_base_to_reference_forward_offset",
             return_value=True,
-        ) as move_mock:
+        ) as move_mock, patch.object(
+            module,
+            "move_arm_to_joint_positions_once",
+            side_effect=lambda *args, **kwargs: event_log.append("find_wave_pose"),
+        ) as find_wave_pose_mock, patch.object(
+            FakeActionClient,
+            "send_goal",
+            autospec=True,
+            side_effect=lambda client, goal: event_log.append("send_goal") or client.goals.append(goal),
+        ), patch.object(
+            module,
+            "move_arm_go_zero_async",
+            side_effect=lambda label: event_log.append(("go_zero_async", label)),
+        ) as go_zero_async_mock:
             outcome = module.FindWavingCustomersState().execute(userdata)
 
         self.assertEqual(outcome, "success")
         self.assertEqual(len(userdata.detected_customer_points), 2)
         self.assertAlmostEqual(userdata.detected_customer_points[1].x, 3.0)
+        find_wave_pose_mock.assert_called_once_with(module.FIND_WAVE_JOINTS_RAD, description="find_wave")
+        self.assertLess(event_log.index("find_wave_pose"), event_log.index("send_goal"))
+        go_zero_async_mock.assert_called_once_with("find_wave_go_zero")
         lookup_mock.assert_called_once_with(timeout_sec=2.0)
         move_mock.assert_called_once_with(
             reference_pose,
@@ -699,12 +749,74 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
             module,
             "move_base_to_reference_forward_offset",
             return_value=False,
-        ) as move_mock:
+        ) as move_mock, patch.object(
+            module,
+            "move_arm_to_joint_positions_once",
+        ), patch.object(
+            module,
+            "move_arm_go_zero_async",
+        ) as go_zero_async_mock:
             outcome = module.FindWavingCustomersState().execute(userdata)
 
         self.assertEqual(outcome, "success")
         self.assertEqual(len(userdata.detected_customer_points), 2)
         move_mock.assert_called_once()
+        go_zero_async_mock.assert_called_once_with("find_wave_go_zero")
+
+    def test_find_waving_customers_state_should_go_zero_when_action_server_unavailable(self):
+        module = load_module()
+        userdata = types.SimpleNamespace()
+
+        with patch.object(
+            FakeActionClient,
+            "wait_for_server",
+            return_value=False,
+        ), patch.object(
+            module,
+            "move_arm_to_joint_positions_once",
+        ) as find_wave_pose_mock, patch.object(
+            module,
+            "move_arm_go_zero_async",
+        ) as go_zero_async_mock:
+            outcome = module.FindWavingCustomersState().execute(userdata)
+
+        self.assertEqual(outcome, "failure")
+        find_wave_pose_mock.assert_called_once_with(module.FIND_WAVE_JOINTS_RAD, description="find_wave")
+        go_zero_async_mock.assert_called_once_with("find_wave_go_zero")
+
+    def test_find_waving_customers_state_should_go_zero_when_no_customer_found(self):
+        module = load_module()
+        FakeActionClient.next_result = types.SimpleNamespace(success=False, person_points_map=[])
+        userdata = types.SimpleNamespace()
+
+        with patch.object(module, "move_arm_to_joint_positions_once") as find_wave_pose_mock, patch.object(
+            module,
+            "move_arm_go_zero_async",
+        ) as go_zero_async_mock:
+            outcome = module.FindWavingCustomersState().execute(userdata)
+
+        self.assertEqual(outcome, "failure")
+        find_wave_pose_mock.assert_called_once_with(module.FIND_WAVE_JOINTS_RAD, description="find_wave")
+        go_zero_async_mock.assert_called_once_with("find_wave_go_zero")
+
+    def test_find_waving_customers_state_should_go_zero_when_find_wave_pose_fails(self):
+        module = load_module()
+        userdata = types.SimpleNamespace()
+
+        with patch.object(
+            module,
+            "move_arm_to_joint_positions_once",
+            side_effect=RuntimeError("arm failed"),
+        ) as find_wave_pose_mock, patch.object(
+            module,
+            "move_arm_go_zero_async",
+        ) as go_zero_async_mock:
+            outcome = module.FindWavingCustomersState().execute(userdata)
+
+        self.assertEqual(outcome, "failure")
+        find_wave_pose_mock.assert_called_once_with(module.FIND_WAVE_JOINTS_RAD, description="find_wave")
+        go_zero_async_mock.assert_called_once_with("find_wave_go_zero")
+        self.assertEqual(FakeActionClient.instances, [])
 
     def test_load_customer_queue_should_trim_to_remaining_count(self):
         module = load_module()
@@ -725,12 +837,44 @@ class TwoCustomerFlowStateTest(unittest.TestCase):
             pending_customer_points=[make_point(1.0, 0.0), make_point(2.0, 0.0)],
         )
 
-        outcome = module.SelectNextCustomerState().execute(userdata)
+        with patch.object(module, "start_grasp_realsense_runtime") as start_camera_mock:
+            outcome = module.SelectNextCustomerState().execute(userdata)
 
         self.assertEqual(outcome, "success")
         self.assertAlmostEqual(userdata.customer_point_map.x, 1.0)
         self.assertEqual(len(userdata.pending_customer_points), 1)
         self.assertAlmostEqual(userdata.pending_customer_points[0].x, 2.0)
+        start_camera_mock.assert_called_once_with()
+
+    def test_select_next_customer_should_fail_when_grasp_realsense_start_fails(self):
+        module = load_module()
+        first_point = make_point(1.0, 0.0)
+        second_point = make_point(2.0, 0.0)
+        userdata = types.SimpleNamespace(pending_customer_points=[first_point, second_point])
+
+        with patch.object(
+            module,
+            "start_grasp_realsense_runtime",
+            side_effect=RuntimeError("camera busy"),
+        ):
+            outcome = module.SelectNextCustomerState().execute(userdata)
+
+        self.assertEqual(outcome, "failure")
+        self.assertFalse(hasattr(userdata, "customer_point_map"))
+        self.assertEqual(userdata.pending_customer_points, [first_point, second_point])
+
+    def test_grasp_first_ordered_item_should_release_grasp_realsense_when_no_targets(self):
+        module = load_module()
+        userdata = types.SimpleNamespace(orderlist=[], orderlist_num=[])
+
+        with patch.object(module, "lookup_robot_pose", side_effect=RuntimeError("no tf")), patch.object(
+            module,
+            "release_grasp_realsense_runtime",
+        ) as release_camera_mock:
+            outcome = module.GraspFirstOrderedItemState().execute(userdata)
+
+        self.assertEqual(outcome, "success")
+        release_camera_mock.assert_called_once_with()
 
     def test_navigate_pose_state_should_forward_pid_pose_when_explicitly_configured(self):
         module = load_module()
