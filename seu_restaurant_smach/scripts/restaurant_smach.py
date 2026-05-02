@@ -74,7 +74,7 @@ TARGET_CUSTOMER_COUNT = 2
 MAX_CUSTOMERS_PER_SCAN = 2
 WAVE_TIMEOUT_SEC = 30.0
 #寻找挥手时旋转速度
-WAVE_ANGULAR_SPEED_RAD_S = 0.2
+WAVE_ANGULAR_SPEED_RAD_S = 0.1
 #挥手后前进距离
 POST_WAVE_FORWARD_DISTANCE_M = 0
 
@@ -96,7 +96,7 @@ ORDER_REPEAT_PREFIX = "The customer ordered "
 ORDER_REPEAT_SUFFIX = ", please give me them."
 FINAL_DELIVER_TEXT = "I am back. Please take your order. Enjoy your meal."
 POST_GRASP_REQUEST_TEXT = "please give me the rest things"
-GRASP_CATEGORY = "bottle.objects."
+GRASP_CATEGORY = "bottle.item.object."
 GRASP_PROFILE_BUNDLE_PATH = ""
 GRASP_CONDA_EXE = "conda"
 GRASP_DETECT_ENV_NAME = "/home/duo/anaconda3/envs/groundedsam/bin/python"
@@ -123,7 +123,7 @@ GRASP_RETRY_YAW_TOLERANCE_RAD = math.radians(2.0)
 GRASP_RETRY_TIMEOUT_SEC = 8.0
 GRASP_ROTATE_CONTROL_HZ = 20.0
 # 抓取重试前后位移参数。
-GRASP_RETRY_LINEAR_TARGET_OFFSETS_M = [0.0, 0.3, -0.3]
+GRASP_RETRY_LINEAR_TARGET_OFFSETS_M = [0.0, 0.15, -0.15]
 GRASP_RETRY_LINEAR_SPEED_M_S = 0.10
 GRASP_RETRY_LINEAR_TOLERANCE_M = 0.01
 GRASP_RETRY_LINEAR_CONTROL_HZ = 20.0
@@ -134,7 +134,7 @@ BAR_DOCK_CLOUD_X_MIN_M = 0.26
 BAR_DOCK_CLOUD_X_MAX_M = 1.00
 BAR_DOCK_CLOUD_Y_MIN_M = -0.10
 BAR_DOCK_CLOUD_Y_MAX_M = 0.10
-BAR_DOCK_CLOUD_Z_MIN_M = 0.20
+BAR_DOCK_CLOUD_Z_MIN_M = 0.05
 BAR_DOCK_CLOUD_Z_MAX_M = 0.70
 BAR_DOCK_CLOUD_NEAREST_POINT_COUNT = 50
 BAR_DOCK_CLOUD_FRAME_COUNT = 10
@@ -328,11 +328,8 @@ def build_closed_set_item_name_set():
 
 
 def build_closed_set_gdino_prompt():
-    """把闭集类别列表拼成 gdino prompt。"""
-    closed_set_item_names = build_closed_set_item_name_list()
-    if not closed_set_item_names:
-        return ""
-    return ".".join(closed_set_item_names) + "."
+    """返回闭集粗检测使用的 gdino prompt；最终目标仍由 closed_set_target_prompt 决定。"""
+    return GRASP_CATEGORY
 
 
 def build_target_item_name_list_from_order(orderlist, orderlist_num):

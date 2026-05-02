@@ -188,9 +188,25 @@ class LocalNearestPersonDetector:
         self.pipeline.start(config)
 
     def close(self):
-        """关闭相机。"""
+        """关闭相机，并释放本次对齐使用的 YOLO CUDA 显存。"""
         try:
             self.pipeline.stop()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "pose_model", None) is not None:
+                self.pose_model.to("cpu")
+                self.pose_model = None
+        except Exception:
+            self.pose_model = None
+        try:
+            import gc
+            import torch
+
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
         except Exception:
             pass
 
