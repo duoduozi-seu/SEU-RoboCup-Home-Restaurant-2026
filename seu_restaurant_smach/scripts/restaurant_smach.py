@@ -113,12 +113,12 @@ GRASP_WARM_START_REQUIRED_SERVICES = (
     "joint_moveit_ctrl_arm",
     "joint_moveit_ctrl_gripper",
 )
-CLOSED_SET_ITEM_NAME_LIST = ["cola", "water", "biscuit", "cookie", "orange", "sprite", "lays", "bread"]
+CLOSED_SET_ITEM_NAME_LIST = ["cola", "water", "biscuit", "cookie", "orange_juice", "sprite", "lays", "bread", "milk", "chip"]
 
 # 抓取旋转寻找参数
 # 餐厅任务现在只允许一次最多抓 3 件“实际物品”，不是 3 个名称。
 MAX_GRASP_ITEM_COUNT = 3
-GRASP_RETRY_YAW_OFFSETS_DEG = [0.0, 10.0, -10.0]
+GRASP_RETRY_YAW_OFFSETS_DEG = [0.0, 20.0, -20.0]
 # 分别控制 GRASP_RETRY_LINEAR_TARGET_OFFSETS_M 三个坐标是否启用旋转尝试。
 # 设为 False 时，该坐标只尝试 0 度，不再尝试后续 +/- yaw。
 GRASP_RETRY_ENABLE_YAW_BY_LINEAR_OFFSET = [False, False, False]
@@ -132,7 +132,7 @@ GRASP_RETRY_LINEAR_SPEED_M_S = 0.10
 GRASP_RETRY_LINEAR_TOLERANCE_M = 0.01
 GRASP_RETRY_LINEAR_CONTROL_HZ = 20.0
 # 导航到吧台后的点云对距参数。
-BAR_DOCK_TARGET_DISTANCE_M = 0.3 #距离吧台的距离
+BAR_DOCK_TARGET_DISTANCE_M = 0.33 #距离吧台的距离
 BAR_DOCK_CLOUD_WAIT_TIMEOUT_SEC = 2.0
 BAR_DOCK_CLOUD_X_MIN_M = 0.26
 BAR_DOCK_CLOUD_X_MAX_M = 1.00
@@ -155,10 +155,10 @@ CLOSED_SET_FAILURE_KIND_NO_MATCH = "no_match"
 CLOSED_SET_FAILURE_KIND_GRASP_ERROR = "grasp_error"
 
 # 下面 5 组是本任务里写死的机械臂关节常量，后续现场联调只改这里。
-# 现有托盘位姿 1：托盘上方的中转位。放入托盘和从托盘取出时都先到这里。
+# 现有托盘位姿 1：托盘上方的中转位。放入托盘和从托盘取出时都先到这里。(主托盘)
 TRAY_ABOVE_JOINTS_RAD = [-1.605, 1.386, -0.908, 0.00, 1.191, -1.538]
 # 现有托盘位姿 2：托盘的落放/取件位。放入托盘和从托盘取出都用这个点。
-TRAY_PICK_JOINTS_RAD = [-1.605, 1.703, -0.592, 0.0, 0.559, -1.538] #[1.605, 1.703, -0.592, 0.0, 0.559, -1.538]
+TRAY_PICK_JOINTS_RAD = [-1.438, 1.706, -0.599, 0.0, 0.559, -1.434] #[1.605, 1.703, -0.592, 0.0, 0.559, -1.538]
 # 新增托盘位姿 1：另一个托盘上方的中转位。
 TRAY_ABOVE_JOINTS_RAD_OTHER = [1.605, 1.386, -0.908, 0.00, 1.191, -1.538]
 # 新增托盘位姿 2：另一个托盘的落放/取件位。

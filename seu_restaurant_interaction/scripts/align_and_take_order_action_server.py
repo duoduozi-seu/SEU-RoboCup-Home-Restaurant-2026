@@ -38,7 +38,7 @@ ROBOT_BASE_FRAME = "base_link"
 CMD_VEL_TOPIC = "/cmd_vel"
 VOICE_SERVICE_NAME = "voice_service"
 SPEECH_SERVICE_NAME = "speech_recognition_service"
-MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models", "yolo26m-pose.pt")
+MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models", "yolo26s-pose.pt")
 
 FRAME_WIDTH = 848
 FRAME_HEIGHT = 480
@@ -55,6 +55,7 @@ CENTER_TOLERANCE_PX = 40
 DISTANCE_TOLERANCE_M = 0.15
 ANGULAR_SPEED = 0.18
 LINEAR_SPEED = 0.08
+ALIGN_POSE_FORCE_CPU = True
 
 KEYPOINT_INDEX = {
     "left_shoulder": 5,
@@ -175,7 +176,7 @@ class LocalNearestPersonDetector:
         from ultralytics import YOLO
 
         self.rs = rs
-        self.pose_device = 0 if torch.cuda.is_available() else "cpu"
+        self.pose_device = "cpu" if ALIGN_POSE_FORCE_CPU else (0 if torch.cuda.is_available() else "cpu")
         if not os.path.exists(model_path):
             raise FileNotFoundError("interaction model not found: {}".format(model_path))
 

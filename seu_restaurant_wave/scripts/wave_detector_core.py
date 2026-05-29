@@ -14,7 +14,7 @@ from typing import Iterable, Optional
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# POSE_MODEL_PATH = os.path.join(os.path.dirname(SCRIPT_DIR), "models", "yolo26m-pose.pt")
+# POSE_MODEL_PATH = os.path.join(os.path.dirname(SCRIPT_DIR), "models", "yolo26l-pose.pt")
 POSE_MODEL_PATH = '/home/duo/GPSR_ws_zyd/res_demo/yolo26m-pose.pt'
 
 FRAME_WIDTH = 1280
@@ -29,12 +29,10 @@ POSE_IOU = 0.45
 KEYPOINT_VISIBILITY = 0.35
 TRACK_KEEP_FRAMES = 18
 WAVE_HISTORY = 14
-DEPTH_SAMPLE_RADIUS = 6
-DEPTH_FILTER_WINDOW = 5
+DEPTH_BOX_SAMPLE_LOWER_RATIO = 0.25
+DEPTH_BOX_SAMPLE_UPPER_RATIO = 0.60
 SIMPLE_RAISE_REQUIRED_FRAMES = 10
 SIMPLE_RAISE_MARGIN_SHOULDER_WIDTH = 0.10
-DEPTH_CENTER_BOX_Y_RATIO = 0.45
-SHOULDER_DEPTH_Y_OFFSET_PX = 10
 
 KEYPOINT_INDEX = {
     "left_shoulder": 5,
@@ -80,6 +78,25 @@ def select_nearest_waving_candidates(candidates: Iterable[dict], max_count: int 
     return valid_candidates[: max(0, int(max_count))]
 
 
+def average_camera_points(camera_points):
+    """对多帧相机坐标取平均，用于最终目标点。"""
+    valid_points = []
+    for camera_point in camera_points or []:
+        if camera_point is None or len(camera_point) < 3:
+            continue
+        valid_points.append((float(camera_point[0]), float(camera_point[1]), float(camera_point[2])))
+
+    if not valid_points:
+        return None
+
+    point_count = float(len(valid_points))
+    return (
+        sum(point[0] for point in valid_points) / point_count,
+        sum(point[1] for point in valid_points) / point_count,
+        sum(point[2] for point in valid_points) / point_count,
+    )
+
+
 def clamp_box(x1, y1, x2, y2, width, height):
     """把检测框限制到图像内部。"""
     x1 = max(0, min(int(x1), width - 1))
@@ -111,17 +128,21 @@ def bbox_iou(box_a, box_b):
     return inter_area / float(area_a + area_b - inter_area)
 
 
-def sample_depth_median(depth_frame, center_x, center_y, radius=DEPTH_SAMPLE_RADIUS):
-    """对局部小窗口取深度中值，减少单点抖动。"""
+def sample_box_depth_mean(
+    depth_frame,
+    person_box,
+    lower_ratio=DEPTH_BOX_SAMPLE_LOWER_RATIO,
+    upper_ratio=DEPTH_BOX_SAMPLE_UPPER_RATIO,
+):
+    """在整个人体框内取 20%-70% 有效深度值均值。"""
     profile = depth_frame.get_profile().as_video_stream_profile()
     width = profile.width()
     height = profile.height()
-    center_x = int(center_x)
-    center_y = int(center_y)
+    x1, y1, x2, y2 = clamp_box(person_box[0], person_box[1], person_box[2], person_box[3], width, height)
     valid_depths = []
 
-    for pixel_y in range(max(0, center_y - radius), min(height, center_y + radius + 1)):
-        for pixel_x in range(max(0, center_x - radius), min(width, center_x + radius + 1)):
+    for pixel_y in range(y1, y2 + 1):
+        for pixel_x in range(x1, x2 + 1):
             depth_value = depth_frame.get_distance(pixel_x, pixel_y)
             if depth_value > 0.0:
                 valid_depths.append(depth_value)
@@ -129,21 +150,26 @@ def sample_depth_median(depth_frame, center_x, center_y, radius=DEPTH_SAMPLE_RAD
     if not valid_depths:
         return 0.0
     valid_depths.sort()
-    return float(valid_depths[len(valid_depths) // 2])
+    sample_count = len(valid_depths)
+    lower_index = max(0, min(sample_count - 1, int(sample_count * lower_ratio)))
+    upper_index = max(lower_index + 1, min(sample_count, int(sample_count * upper_ratio)))
+    selected_depths = valid_depths[lower_index:upper_index]
+    return float(sum(selected_depths) / len(selected_depths))
 
 
-def render_debug_image(color_image, candidates, selected_candidate):
+def render_debug_image(color_image, candidates, hit_track_ids=None):
     """把当前候选人与最终选中目标简单画到调试图像上。
 
     约定：
-    1. 所有当前候选人都会画框，方便看见检测是否稳定；
-    2. 已满足挥手条件的人用黄色框；
-    3. 当前最终被选中的最近挥手人用绿色框；
+    1. 所有当前候选人都会画框，方便看见当前帧 YOLO 检测结果；
+    2. 已满足挥手条件但尚未命中的人用黄色框；
+    3. 在当前离散角度里已命中的 track 用绿色框；
     4. 若没有候选人，直接返回原图副本。
     """
     import cv2
 
     debug_image = color_image.copy()
+    hit_track_ids = set(hit_track_ids or [])
 
     for candidate in candidates:
         box = candidate.get("box")
@@ -151,7 +177,8 @@ def render_debug_image(color_image, candidates, selected_candidate):
             continue
 
         x1, y1, x2, y2 = [int(value) for value in box]
-        is_selected = candidate is selected_candidate
+        track_id = candidate.get("track_id")
+        is_hit_target = track_id in hit_track_ids if track_id is not None else False
         is_waving = bool(candidate.get("is_waving", False))
 
         color = (160, 160, 160)
@@ -162,10 +189,10 @@ def render_debug_image(color_image, candidates, selected_candidate):
             color = (0, 255, 255)
             thickness = 2
             label = "waving"
-        if is_selected:
+        if is_hit_target:
             color = (0, 255, 0)
             thickness = 3
-            label = "selected"
+            label = "target"
 
         depth_m = float(candidate.get("depth_m", 0.0))
         if depth_m > 0.0:
@@ -201,7 +228,7 @@ def evaluate_simple_raise(raised_history):
 class WaveDetectorRuntime:
     """YOLO26 + RealSense 挥手检测运行时。
 
-    这个类只提供“每处理一帧，输出当前最近挥手人”的能力。
+    这个类只提供“每处理一帧，输出当前帧候选人与深度”的能力。
     """
 
     def __init__(self, model_path=POSE_MODEL_PATH):
@@ -220,8 +247,15 @@ class WaveDetectorRuntime:
         self.pipeline = rs.pipeline()
         config = rs.config()
         config.enable_device(WAVE_CAMERA_SERIAL_NO)
+
         config.enable_stream(rs.stream.depth, DEPTH_FRAME_WIDTH, DEPTH_FRAME_HEIGHT, rs.format.z16, FRAME_FPS)
         config.enable_stream(rs.stream.color, FRAME_WIDTH, FRAME_HEIGHT, rs.format.bgr8, FRAME_FPS)
+        for device in rs.context().query_devices():
+            if device.get_info(rs.camera_info.serial_number).lower() == WAVE_CAMERA_SERIAL_NO.lower():
+                depth_sensor = device.first_depth_sensor()
+                if depth_sensor.supports(rs.option.visual_preset):
+                    depth_sensor.set_option(rs.option.visual_preset, int(rs.l500_visual_preset.max_range))
+                break
         self.align_to_color = rs.align(rs.stream.color)
         self.spatial_filter = rs.spatial_filter()
         self.temporal_filter = rs.temporal_filter()
@@ -266,7 +300,7 @@ class WaveDetectorRuntime:
             pass
 
     def process_once(self):
-        """处理一帧，并返回当前最近挥手人的相机坐标与深度。"""
+        """处理一帧，并返回当前帧图像与候选人列表。"""
         self.frame_index += 1
 
         frames = self.pipeline.wait_for_frames()
@@ -286,18 +320,9 @@ class WaveDetectorRuntime:
 
         current_candidates = [self._clone_track_candidate(track_id) for track_id in current_track_ids]
         current_candidates = self._attach_camera_points_to_candidates(depth_frame, current_candidates)
-        selected = select_nearest_waving_candidate(current_candidates)
-        debug_image = render_debug_image(color_image, current_candidates, selected)
-        if selected is None:
-            return {
-                "selected_candidate": None,
-                "current_candidates": current_candidates,
-                "debug_image": debug_image,
-            }
         return {
-            "selected_candidate": selected,
+            "color_image": color_image,
             "current_candidates": current_candidates,
-            "debug_image": debug_image,
         }
 
     @staticmethod
@@ -308,7 +333,7 @@ class WaveDetectorRuntime:
         return np.asanyarray(color_frame.get_data())
 
     def _extract_detections(self, color_image, depth_frame):
-        """从单帧图像中提取人体框、关键点和稳定深度。"""
+        """从单帧图像中提取人体框、关键点和当前帧深度。"""
         pose_result = self.pose_model.predict(
             color_image,
             verbose=False,
@@ -336,8 +361,6 @@ class WaveDetectorRuntime:
         for det_index in range(len(boxes_xyxy)):
             x1, y1, x2, y2 = boxes_xyxy[det_index]
             person_box = clamp_box(x1, y1, x2, y2, FRAME_WIDTH, FRAME_HEIGHT)
-            if (person_box[2] - person_box[0]) < 50 or (person_box[3] - person_box[1]) < 120:
-                continue
 
             point_map = {}
             for point_name, point_index in KEYPOINT_INDEX.items():
@@ -345,8 +368,8 @@ class WaveDetectorRuntime:
                 point_conf = float(keypoints_conf[det_index, point_index])
                 point_map[point_name] = (int(point_x), int(point_y), point_conf)
 
-            depth_center_x, depth_center_y = self._compute_depth_center(person_box, point_map)
-            depth_m = sample_depth_median(depth_frame, depth_center_x, depth_center_y)
+            depth_center_x, depth_center_y = self._compute_depth_center(person_box)
+            depth_m = sample_box_depth_mean(depth_frame, person_box)
             detections.append(
                 {
                     "box": person_box,
@@ -360,25 +383,9 @@ class WaveDetectorRuntime:
         return detections
 
     @staticmethod
-    def _compute_depth_center(person_box, point_map):
-        """优先在两肩中点下方采样深度，适配桌前上半身可见场景。"""
-        left_shoulder = point_map["left_shoulder"]
-        right_shoulder = point_map["right_shoulder"]
-
-        shoulder_points = [point for point in (left_shoulder, right_shoulder) if point[2] > KEYPOINT_VISIBILITY]
-
-        box_center_x = (person_box[0] + person_box[2]) // 2
-        box_center_y = int(person_box[1] + (person_box[3] - person_box[1]) * DEPTH_CENTER_BOX_Y_RATIO)
-
-        if len(shoulder_points) == 2:
-            shoulder_center_x = sum(point[0] for point in shoulder_points) / 2.0
-            shoulder_center_y = sum(point[1] for point in shoulder_points) / 2.0
-            return int(shoulder_center_x), int(shoulder_center_y + SHOULDER_DEPTH_Y_OFFSET_PX)
-
-        if len(shoulder_points) == 1:
-            return box_center_x, int(shoulder_points[0][1] + SHOULDER_DEPTH_Y_OFFSET_PX)
-
-        return box_center_x, box_center_y
+    def _compute_depth_center(person_box):
+        """直接使用人体检测框中心作为深度采样中心。"""
+        return (person_box[0] + person_box[2]) // 2, (person_box[1] + person_box[3]) // 2
 
     def _update_tracks(self, detections):
         """把当前帧检测结果并入时间轨迹，并更新挥手状态。"""
@@ -425,14 +432,7 @@ class WaveDetectorRuntime:
             track["depth_pixel"] = detection["depth_pixel"]
             track["box_conf"] = detection["box_conf"]
             track["last_seen"] = self.frame_index
-
-            if detection["depth_m"] > 0.0:
-                track["depth_history"].append(float(detection["depth_m"]))
-            if track["depth_history"]:
-                sorted_depths = sorted(track["depth_history"])
-                track["depth_m"] = float(sorted_depths[len(sorted_depths) // 2])
-            else:
-                track["depth_m"] = 0.0
+            track["depth_m"] = float(detection["depth_m"])
 
             self._update_wave_status(track, detection["point_map"])
 
@@ -447,7 +447,6 @@ class WaveDetectorRuntime:
             "box": person_box,
             "point_map": {},
             "depth_m": 0.0,
-            "depth_history": deque(maxlen=DEPTH_FILTER_WINDOW),
             "depth_pixel": (0, 0),
             "box_conf": 0.0,
             "last_seen": self.frame_index,
@@ -495,7 +494,7 @@ class WaveDetectorRuntime:
         left_wrist = point_map["left_wrist"]
         right_wrist = point_map["right_wrist"]
 
-        shoulder_width = max(20.0, abs(right_shoulder[0] - left_shoulder[0]))
+        shoulder_width = max(3.0, abs(right_shoulder[0] - left_shoulder[0]))
         margin = shoulder_width * SIMPLE_RAISE_MARGIN_SHOULDER_WIDTH
 
         left_visible = min(left_shoulder[2], left_elbow[2], left_wrist[2]) > KEYPOINT_VISIBILITY

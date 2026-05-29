@@ -30,12 +30,12 @@ from find_waving_customer_action_server import (
     camera_point_to_base_link_point,
     deduplicate_nearby_candidates,
     normalize_angle_rad,
-    should_finish_search_after_candidate_update,
-    update_second_customer_wait_deadline,
-    update_swing_turn_direction,
 )
 from wave_detector_core import (
+    WaveDetectorRuntime,
+    average_camera_points,
     render_debug_image,
+    sample_box_depth_mean,
     select_nearest_waving_candidate,
     select_nearest_waving_candidates,
 )
@@ -45,47 +45,50 @@ from tf.transformations import quaternion_from_euler
 class WaveGeometryTest(unittest.TestCase):
     """挥手目标选择测试。"""
 
-    def test_update_swing_turn_direction_should_switch_to_right_at_positive_limit(self):
-        """摆到左侧 +30 度边界后，应切换成向右回摆。"""
-        turn_direction = update_swing_turn_direction(math.radians(30.0), 1)
+    def test_compute_depth_center_uses_person_box_center(self):
+        """单帧深度采样点应直接使用检测框中心。"""
+        center = WaveDetectorRuntime._compute_depth_center((10, 20, 50, 80))
 
-        self.assertEqual(turn_direction, -1)
+        self.assertEqual(center, (30, 50))
 
-    def test_update_swing_turn_direction_should_switch_to_left_at_negative_limit(self):
-        """摆到右侧 -30 度边界后，应切换成向左回摆。"""
-        turn_direction = update_swing_turn_direction(math.radians(-30.0), -1)
+    def test_sample_box_depth_mean_uses_sorted_middle_depth_range(self):
+        """整个人框内应取排序后 20%-70% 的有效深度均值。"""
 
-        self.assertEqual(turn_direction, 1)
+        class FakeVideoStreamProfile:
+            def width(self):
+                return 40
+
+            def height(self):
+                return 40
+
+        class FakeProfile:
+            def as_video_stream_profile(self):
+                return FakeVideoStreamProfile()
+
+        class FakeDepthFrame:
+            def __init__(self):
+                self.depth_values = {}
+                values = list(range(1, 401))
+                for index, value in enumerate(values):
+                    pixel_x = 10 + index % 20
+                    pixel_y = 10 + index // 20
+                    self.depth_values[(pixel_x, pixel_y)] = float(value)
+
+            def get_profile(self):
+                return FakeProfile()
+
+            def get_distance(self, pixel_x, pixel_y):
+                return self.depth_values.get((pixel_x, pixel_y), 0.0)
+
+        depth_m = sample_box_depth_mean(FakeDepthFrame(), (10, 10, 29, 29))
+
+        self.assertAlmostEqual(depth_m, 180.5)
 
     def test_normalize_angle_rad_should_keep_relative_yaw_small_across_wraparound(self):
         """相对起始朝向跨越 ±pi 时，归一化后的偏航应保持小角度。"""
         relative_yaw = normalize_angle_rad(math.radians(-179.0) - math.radians(179.0))
 
         self.assertAlmostEqual(relative_yaw, math.radians(2.0), places=6)
-
-    def test_update_second_customer_wait_deadline_should_start_after_first_customer(self):
-        """首次识别到 1 位顾客后，应启动等待下一位顾客的 3 秒窗口。"""
-        deadline = update_second_customer_wait_deadline(None, 1, 12.5)
-
-        self.assertAlmostEqual(deadline, 15.5)
-
-    def test_should_finish_search_after_candidate_update_should_wait_within_three_seconds(self):
-        """只识别到 1 位顾客且 3 秒未到时，不应提前结束。"""
-        should_finish = should_finish_search_after_candidate_update(1, 14.9, 15.5)
-
-        self.assertFalse(should_finish)
-
-    def test_should_finish_search_after_candidate_update_should_stop_after_three_seconds_without_second_person(self):
-        """只识别到 1 位顾客且 3 秒到期后，应结束搜索。"""
-        should_finish = should_finish_search_after_candidate_update(1, 15.5, 15.5)
-
-        self.assertTrue(should_finish)
-
-    def test_should_finish_search_after_candidate_update_should_stop_immediately_for_two_people(self):
-        """一旦累计识别到两位顾客，应立即结束搜索。"""
-        should_finish = should_finish_search_after_candidate_update(2, 13.0, None)
-
-        self.assertTrue(should_finish)
 
     def test_select_nearest_waving_candidate_prefers_smallest_positive_depth(self):
         """多人同时挥手时应选择最近且深度有效的目标。"""
@@ -98,6 +101,18 @@ class WaveGeometryTest(unittest.TestCase):
         selected = select_nearest_waving_candidate(candidates)
 
         self.assertEqual(selected["depth_m"], 1.2)
+
+    def test_average_camera_points_returns_mean_point(self):
+        """多帧相机坐标应按 xyz 分量分别求均值。"""
+        average_point = average_camera_points(
+            [
+                (1.0, 2.0, 3.0),
+                (2.0, 3.0, 4.0),
+                (4.0, 5.0, 6.0),
+            ]
+        )
+
+        self.assertEqual(average_point, (7.0 / 3.0, 10.0 / 3.0, 13.0 / 3.0))
 
     def test_select_nearest_waving_candidates_returns_two_nearest_people(self):
         """当有多个挥手人时，应返回最近的两个人且按距离排序。"""
@@ -126,20 +141,21 @@ class WaveGeometryTest(unittest.TestCase):
     def test_render_debug_image_keeps_image_shape(self):
         """调试图像渲染后应保持原始尺寸不变。"""
         image = np.zeros((64, 96, 3), dtype=np.uint8)
-        candidate = {"box": (10, 8, 40, 50), "depth_m": 1.25, "is_waving": True}
+        candidate = {"track_id": 1, "box": (10, 8, 40, 50), "depth_m": 1.25, "is_waving": True}
 
-        rendered = render_debug_image(image, [candidate], candidate)
+        rendered = render_debug_image(image, [candidate], hit_track_ids={1})
 
         self.assertEqual(rendered.shape, image.shape)
 
-    def test_render_debug_image_marks_selected_candidate(self):
-        """存在目标时，调试图像应被画上可见标记。"""
+    def test_render_debug_image_marks_hit_candidate(self):
+        """命中的 track 应被画成绿色框。"""
         image = np.zeros((64, 96, 3), dtype=np.uint8)
-        candidate = {"box": (10, 8, 40, 50), "depth_m": 1.25, "is_waving": True}
+        candidate = {"track_id": 7, "box": (10, 8, 40, 50), "depth_m": 1.25, "is_waving": True}
 
-        rendered = render_debug_image(image, [candidate], candidate)
+        rendered = render_debug_image(image, [candidate], hit_track_ids={7})
 
-        self.assertGreater(int(rendered.sum()), 0)
+        self.assertGreater(int(rendered[8, 10, 1]), int(rendered[8, 10, 0]))
+        self.assertGreater(int(rendered[8, 10, 1]), int(rendered[8, 10, 2]))
 
     def test_camera_point_to_base_link_point_applies_backward_camera_bias(self):
         """base_link x 应额外叠加当前配置的相机前后偏置。"""

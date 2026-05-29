@@ -23,7 +23,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from wave_detector_core import WaveDetectorRuntime
+from wave_detector_core import WaveDetectorRuntime, average_camera_points, render_debug_image
 
 
 ACTION_NAME = "find_waving_customer"
@@ -36,12 +36,15 @@ MARKER_NS = "restaurant_wave_target"
 DEFAULT_CAMERA_FRAME = "camera1_color_optical_frame"
 DEFAULT_RATE_HZ = 10.0
 # realsense坐标偏移
-CAMERA_BACKWARD_BIAS_M = -0.85
-SAME_PERSON_DISTANCE_M = 0.40
+CAMERA_BACKWARD_BIAS_M = 0.1
+SAME_PERSON_DISTANCE_M = 0.60
 DEFAULT_SWING_TIMEOUT_SEC = 30.0
 # 旋转幅度
 SWING_HALF_RANGE_RAD = math.radians(10.0)
-WAIT_FOR_NEXT_CUSTOMER_TIMEOUT_SEC = 3.0
+SWING_TARGET_OFFSETS_RAD = (0.0, SWING_HALF_RANGE_RAD, -SWING_HALF_RANGE_RAD)
+SWING_POSITION_DETECT_FRAMES = 60
+SWING_TRACK_HIT_REQUIRED_FRAMES = 4
+POST_HIT_EXTRA_POSITION_SCAN_COUNT = 1
 RESTORE_ROTATE_TIMEOUT_SEC = 8.0
 RESTORE_ROTATE_CONTROL_HZ = 20.0
 RESTORE_YAW_TOLERANCE_RAD = math.radians(2.0)
@@ -101,49 +104,6 @@ def pose_to_yaw(robot_pose):
         robot_pose.pose.orientation.w,
     )
     return euler_from_quaternion(quaternion)[2]
-
-
-def update_swing_turn_direction(relative_yaw_rad, current_direction, swing_half_range_rad=SWING_HALF_RANGE_RAD):
-    """根据相对起始朝向的偏航，决定当前左右摇摆方向。"""
-    direction = 1 if float(current_direction) >= 0.0 else -1
-    limit_rad = abs(float(swing_half_range_rad))
-
-    if float(relative_yaw_rad) >= limit_rad:
-        return -1
-    if float(relative_yaw_rad) <= -limit_rad:
-        return 1
-    return direction
-
-
-def update_second_customer_wait_deadline(
-    current_deadline_sec,
-    unique_candidate_count,
-    current_time_sec,
-    wait_timeout_sec=WAIT_FOR_NEXT_CUSTOMER_TIMEOUT_SEC,
-):
-    """首次识别到 1 位顾客后，启动等待下一位顾客的 3 秒窗口。"""
-    if int(unique_candidate_count) != 1:
-        return current_deadline_sec
-    if current_deadline_sec is None:
-        return float(current_time_sec) + float(wait_timeout_sec)
-    return float(current_deadline_sec)
-
-
-def should_finish_search_after_candidate_update(
-    unique_candidate_count,
-    current_time_sec,
-    second_customer_wait_deadline_sec,
-):
-    """识别到两人立即结束；识别到一人后 3 秒内没第二人也结束。"""
-    if int(unique_candidate_count) >= 2:
-        return True
-    if (
-        int(unique_candidate_count) == 1
-        and second_customer_wait_deadline_sec is not None
-        and float(current_time_sec) >= float(second_customer_wait_deadline_sec)
-    ):
-        return True
-    return False
 
 
 def build_target_marker(person_point_map, marker_id=0):
@@ -308,55 +268,91 @@ class FindWavingCustomerActionServer:
         self.marker_pub.publish(marker_array)
         self._last_marker_count = len(person_points_map)
 
-    def _restore_initial_yaw(self, initial_yaw, angular_speed_rad_s):
-        """退出 action 前，原地回到扫描开始时的朝向。"""
-        if initial_yaw is None:
-            return
+    def _rotate_to_yaw(
+        self,
+        target_yaw,
+        angular_speed_rad_s,
+        timeout_sec=RESTORE_ROTATE_TIMEOUT_SEC,
+        log_context="target yaw",
+        stop_requested=None,
+    ):
+        """原地转到指定 yaw，转动过程中不做视觉检测。"""
+        if target_yaw is None:
+            return False
 
         rotate_speed = abs(float(angular_speed_rad_s)) if abs(float(angular_speed_rad_s)) > 1e-6 else 0.15
         rate = rospy.Rate(RESTORE_ROTATE_CONTROL_HZ)
-        deadline = time.monotonic() + RESTORE_ROTATE_TIMEOUT_SEC
+        deadline = time.monotonic() + max(0.0, float(timeout_sec))
 
         try:
             while not rospy.is_shutdown():
+                if stop_requested is not None and stop_requested():
+                    return False
+
                 try:
                     current_yaw = pose_to_yaw(self._get_current_pose())
                 except Exception as exc:
-                    rospy.logwarn("[restaurant_wave] restore initial yaw skipped: %s", str(exc))
-                    return
+                    rospy.logwarn("[restaurant_wave] rotate to %s skipped: %s", log_context, str(exc))
+                    return False
 
-                yaw_error = normalize_angle_rad(float(initial_yaw) - float(current_yaw))
+                yaw_error = normalize_angle_rad(float(target_yaw) - float(current_yaw))
                 if abs(yaw_error) <= RESTORE_YAW_TOLERANCE_RAD:
-                    return
+                    return True
                 if time.monotonic() >= deadline:
-                    rospy.logwarn("[restaurant_wave] restore initial yaw timed out")
-                    return
+                    rospy.logwarn("[restaurant_wave] rotate to %s timed out", log_context)
+                    return False
 
                 twist = Twist()
                 twist.angular.z = math.copysign(rotate_speed, yaw_error)
                 self.cmd_vel_pub.publish(twist)
                 rate.sleep()
+            return False
         finally:
             self._stop_robot()
 
+    def _restore_initial_yaw(self, initial_yaw, angular_speed_rad_s):
+        """退出 action 前，原地回到扫描开始时的朝向。"""
+        if initial_yaw is None:
+            return
+
+        self._rotate_to_yaw(
+            initial_yaw,
+            angular_speed_rad_s,
+            timeout_sec=RESTORE_ROTATE_TIMEOUT_SEC,
+            log_context="initial yaw",
+        )
+
     def execute_cb(self, goal):
-        """执行一次完整的“原地左右摇摆找最近挥手人”流程。"""
+        """执行一次完整的“三点离散角度检测找挥手人”流程。"""
         result = FindWavingCustomerResult(success=False, error_msg="")
         angular_speed = abs(goal.angular_speed_rad_s) if abs(goal.angular_speed_rad_s) > 1e-6 else 0.15
-        swing_direction = 1 if goal.angular_speed_rad_s >= 0.0 else -1
         timeout_sec = goal.timeout_sec if goal.timeout_sec > 0.0 else DEFAULT_SWING_TIMEOUT_SEC
         detector = None
-        best_candidates_by_track = {}
+        confirmed_candidates_by_track = {}
+        confirmed_track_ids = set()
         initial_yaw = None
-        second_customer_wait_deadline_sec = None
+        swing_target_index = 0
+        pending_return_to_initial = False
+        first_hit_registered = False
+        extra_position_scans_after_first_hit = 0
+        finish_search = False
+        rospy.loginfo(
+            "[restaurant_wave] action start | timeout=%.2fs angular_speed=%.3frad/s detect_frames=%d hit_required=%d offsets_deg=%s",
+            float(timeout_sec),
+            float(angular_speed),
+            int(SWING_POSITION_DETECT_FRAMES),
+            int(SWING_TRACK_HIT_REQUIRED_FRAMES),
+            ["{:.1f}".format(math.degrees(offset)) for offset in SWING_TARGET_OFFSETS_RAD],
+        )
 
         try:
             detector = WaveDetectorRuntime()
             rate = rospy.Rate(self.rate_hz)
             start_time = rospy.Time.now()
             initial_yaw = pose_to_yaw(self._get_current_pose())
+            self._publish_target_markers([])
 
-            while not rospy.is_shutdown():
+            while not rospy.is_shutdown() and not finish_search:
                 elapsed = (rospy.Time.now() - start_time).to_sec()
                 if elapsed >= timeout_sec:
                     break
@@ -367,110 +363,255 @@ class FindWavingCustomerActionServer:
                     self.server.set_preempted()
                     return
 
-                current_yaw = pose_to_yaw(self._get_current_pose())
-                relative_yaw = normalize_angle_rad(current_yaw - initial_yaw)
-                previous_swing_direction = swing_direction
-                swing_direction = update_swing_turn_direction(relative_yaw, swing_direction)
-                if swing_direction != previous_swing_direction:
+                if pending_return_to_initial:
+                    rotate_timeout_sec = min(
+                        RESTORE_ROTATE_TIMEOUT_SEC,
+                        max(0.0, timeout_sec - elapsed),
+                    )
+                    reached_initial = self._rotate_to_yaw(
+                        initial_yaw,
+                        angular_speed,
+                        timeout_sec=rotate_timeout_sec,
+                        log_context="initial yaw after first hit",
+                        stop_requested=self.server.is_preempt_requested,
+                    )
+                    if self.server.is_preempt_requested():
+                        self._stop_robot()
+                        self._restore_initial_yaw(initial_yaw, angular_speed)
+                        self.server.set_preempted()
+                        return
+                    if not reached_initial:
+                        rospy.logwarn("[restaurant_wave] return to initial yaw after first hit failed; stop search")
+                        break
+
                     self._stop_robot()
                     rospy.sleep(SWING_ENDPOINT_PAUSE_SEC)
+                    pending_return_to_initial = False
+                    continue
 
-                twist = Twist()
-                twist.angular.z = angular_speed * swing_direction
-                self.cmd_vel_pub.publish(twist)
+                target_offset = SWING_TARGET_OFFSETS_RAD[swing_target_index]
+                target_yaw = normalize_angle_rad(initial_yaw + target_offset)
+                rotate_timeout_sec = min(
+                    RESTORE_ROTATE_TIMEOUT_SEC,
+                    max(0.0, timeout_sec - elapsed),
+                )
+                reached_target = self._rotate_to_yaw(
+                    target_yaw,
+                    angular_speed,
+                    timeout_sec=rotate_timeout_sec,
+                    log_context="swing offset {:.3f} rad".format(target_offset),
+                    stop_requested=self.server.is_preempt_requested,
+                )
+                if self.server.is_preempt_requested():
+                    self._stop_robot()
+                    self._restore_initial_yaw(initial_yaw, angular_speed)
+                    self.server.set_preempted()
+                    return
+                if not reached_target:
+                    rospy.logwarn(
+                        "[restaurant_wave] rotate to scan offset %.1fdeg failed; stop search",
+                        math.degrees(target_offset),
+                    )
+                    break
 
-                frame_result = detector.process_once()
-                if frame_result is not None:
-                    self._publish_debug_image(frame_result.get("debug_image"))
+                self._stop_robot()
+                rospy.sleep(SWING_ENDPOINT_PAUSE_SEC)
 
-                selected_candidate = None
-                current_candidates = []
-                if frame_result is not None:
-                    selected_candidate = frame_result.get("selected_candidate")
-                    current_candidates = frame_result.get("current_candidates") or []
+                current_scan_is_post_hit_followup = (
+                    first_hit_registered and extra_position_scans_after_first_hit > 0
+                )
+                first_hit_happened_this_position = False
+                position_detection_counts = {}
+                position_camera_points_by_track = {}
+                position_frame_count = 0
+                position_none_frame_count = 0
+                position_max_person_count = 0
+                position_max_waving_count = 0
+                scan_start_monotonic = time.monotonic()
 
-                if selected_candidate is not None:
-                    try:
-                        person_point_map = self._camera_point_to_map(selected_candidate["camera_point"])
-                    except Exception:
-                        person_point_map = None
-                    if person_point_map is not None:
-                        self._publish_target_markers([person_point_map])
+                for _ in range(SWING_POSITION_DETECT_FRAMES):
+                    elapsed = (rospy.Time.now() - start_time).to_sec()
+                    if elapsed >= timeout_sec:
+                        finish_search = True
+                        break
+
+                    if self.server.is_preempt_requested():
+                        self._stop_robot()
+                        self._restore_initial_yaw(initial_yaw, angular_speed)
+                        self.server.set_preempted()
+                        return
+
+                    position_frame_count += 1
+                    frame_result = detector.process_once()
+                    color_image = None
+                    current_candidates = []
+                    if frame_result is not None:
+                        color_image = frame_result.get("color_image")
+                        current_candidates = frame_result.get("current_candidates") or []
                     else:
-                        self._publish_target_markers([])
-                else:
-                    self._publish_target_markers([])
+                        position_none_frame_count += 1
 
-                for candidate in current_candidates:
-                    if not candidate.get("is_waving", False):
+                    current_waving_count = sum(1 for candidate in current_candidates if candidate.get("is_waving", False))
+                    position_max_person_count = max(position_max_person_count, len(current_candidates))
+                    position_max_waving_count = max(position_max_waving_count, current_waving_count)
+
+                    counted_track_ids_this_frame = set()
+                    for candidate in current_candidates:
+                        if not candidate.get("is_waving", False):
+                            continue
+
+                        track_id = candidate.get("track_id")
+                        if track_id is None:
+                            continue
+                        if track_id in counted_track_ids_this_frame:
+                            continue
+                        counted_track_ids_this_frame.add(track_id)
+
+                        position_detection_counts[track_id] = position_detection_counts.get(track_id, 0) + 1
+                        camera_point = candidate.get("camera_point")
+                        if camera_point is not None:
+                            position_camera_points_by_track.setdefault(track_id, []).append(camera_point)
+                        if (
+                            not first_hit_registered
+                            and not first_hit_happened_this_position
+                            and position_detection_counts[track_id] >= SWING_TRACK_HIT_REQUIRED_FRAMES
+                        ):
+                            first_hit_happened_this_position = True
+
+                    if color_image is not None:
+                        hit_track_ids = set(confirmed_track_ids)
+                        for track_id, detection_count in position_detection_counts.items():
+                            if detection_count >= SWING_TRACK_HIT_REQUIRED_FRAMES:
+                                hit_track_ids.add(track_id)
+                        debug_image = render_debug_image(color_image, current_candidates, hit_track_ids)
+                        self._publish_debug_image(debug_image)
+
+                    rate.sleep()
+
+                hit_track_count = sum(
+                    1
+                    for detection_count in position_detection_counts.values()
+                    if detection_count >= SWING_TRACK_HIT_REQUIRED_FRAMES
+                )
+                camera_point_track_count = sum(
+                    1 for camera_points in position_camera_points_by_track.values() if camera_points
+                )
+                rospy.loginfo(
+                    "[restaurant_wave] scan offset %.1fdeg done | frames=%d none=%d elapsed=%.2fs max_persons=%d max_waving=%d waving_counts=%s hit_tracks=%d camera_tracks=%d confirmed_total=%d post_hit_followup=%s timeout_break=%s",
+                    math.degrees(target_offset),
+                    int(position_frame_count),
+                    int(position_none_frame_count),
+                    float(time.monotonic() - scan_start_monotonic),
+                    int(position_max_person_count),
+                    int(position_max_waving_count),
+                    str(position_detection_counts),
+                    int(hit_track_count),
+                    int(camera_point_track_count),
+                    int(len(confirmed_candidates_by_track)),
+                    str(bool(current_scan_is_post_hit_followup)),
+                    str(bool(finish_search)),
+                )
+
+                if finish_search:
+                    break
+
+                for track_id, detection_count in position_detection_counts.items():
+                    if detection_count < SWING_TRACK_HIT_REQUIRED_FRAMES:
                         continue
-                    if float(candidate.get("depth_m", 0.0)) <= 0.0:
+
+                    confirmed_track_ids.add(track_id)
+                    if track_id in confirmed_candidates_by_track:
                         continue
-                    if candidate.get("camera_point") is None:
+
+                    average_camera_point = average_camera_points(
+                        position_camera_points_by_track.get(track_id, [])
+                    )
+                    if average_camera_point is None:
+                        rospy.logwarn(
+                            "[restaurant_wave] hit track %s skipped: no valid camera point samples",
+                            str(track_id),
+                        )
                         continue
+
                     try:
-                        person_point_map = self._camera_point_to_map(candidate["camera_point"])
-                    except Exception:
+                        person_point_map = self._camera_point_to_map(average_camera_point)
+                    except Exception as exc:
+                        rospy.logwarn(
+                            "[restaurant_wave] hit track %s skipped: map conversion failed: %s",
+                            str(track_id),
+                            str(exc),
+                        )
                         continue
 
-                    track_id = candidate.get("track_id")
-                    if track_id is None:
-                        continue
+                    confirmed_candidates_by_track[track_id] = {
+                        "track_id": track_id,
+                        "depth_m": float(average_camera_point[2]),
+                        "person_point_map": person_point_map,
+                    }
+                    rospy.loginfo(
+                        "[restaurant_wave] confirmed track %s | depth=%.3fm map=(%.3f, %.3f, %.3f)",
+                        str(track_id),
+                        float(average_camera_point[2]),
+                        float(person_point_map.x),
+                        float(person_point_map.y),
+                        float(person_point_map.z),
+                    )
 
-                    current_best = best_candidates_by_track.get(track_id)
-                    if current_best is None or float(candidate["depth_m"]) < float(current_best["depth_m"]):
-                        best_candidates_by_track[track_id] = {
-                            "track_id": track_id,
-                            "depth_m": float(candidate["depth_m"]),
-                            "person_point_map": person_point_map,
-                        }
-
-                unique_candidates = deduplicate_nearby_candidates(
-                    best_candidates_by_track.values(),
+                confirmed_candidates = deduplicate_nearby_candidates(
+                    confirmed_candidates_by_track.values(),
                     same_person_distance_m=SAME_PERSON_DISTANCE_M,
                     max_count=2,
                 )
-                current_elapsed = (rospy.Time.now() - start_time).to_sec()
-                second_customer_wait_deadline_sec = update_second_customer_wait_deadline(
-                    second_customer_wait_deadline_sec,
-                    len(unique_candidates),
-                    current_elapsed,
+                rospy.loginfo(
+                    "[restaurant_wave] confirmed candidates after dedup: %d",
+                    int(len(confirmed_candidates)),
                 )
-                if should_finish_search_after_candidate_update(
-                    len(unique_candidates),
-                    current_elapsed,
-                    second_customer_wait_deadline_sec,
-                ):
-                    break
-                rate.sleep()
+                self._publish_target_markers(
+                    [candidate["person_point_map"] for candidate in confirmed_candidates]
+                )
+
+                if first_hit_happened_this_position:
+                    first_hit_registered = True
+                    # 当前扫描角度一旦首次命中，就把它作为最后一个识别角度；
+                    # 后面不再继续扫下一个角度，直接在统一收尾阶段回正并返回结果。
+                    finish_search = True
+                elif current_scan_is_post_hit_followup:
+                    extra_position_scans_after_first_hit -= 1
+                    if extra_position_scans_after_first_hit <= 0:
+                        finish_search = True
+
+                swing_target_index = (swing_target_index + 1) % len(SWING_TARGET_OFFSETS_RAD)
 
             self._stop_robot()
-            best_candidates = deduplicate_nearby_candidates(
-                best_candidates_by_track.values(),
+            confirmed_candidates = deduplicate_nearby_candidates(
+                confirmed_candidates_by_track.values(),
                 same_person_distance_m=SAME_PERSON_DISTANCE_M,
                 max_count=2,
             )
             self._restore_initial_yaw(initial_yaw, angular_speed)
 
-            if not best_candidates:
+            if not confirmed_candidates:
                 self._publish_target_markers([])
                 result.error_msg = "no waving customer found within search timeout"
+                rospy.logwarn("[restaurant_wave] action abort | %s", result.error_msg)
                 self.server.set_aborted(result, result.error_msg)
                 return
 
             result.success = True
-            result.person_points_map = [candidate["person_point_map"] for candidate in best_candidates]
+            result.person_points_map = [candidate["person_point_map"] for candidate in confirmed_candidates]
             self._publish_target_markers(result.person_points_map)
+            rospy.loginfo("[restaurant_wave] action success | targets=%d", len(result.person_points_map))
             self.server.set_succeeded(result)
         except Exception as exc:
             self._stop_robot()
             self._restore_initial_yaw(initial_yaw, angular_speed)
             self._publish_target_markers([])
             result.error_msg = "find waving customer failed: {}".format(exc)
+            rospy.logerr("[restaurant_wave] action exception | %s", result.error_msg)
             self.server.set_aborted(result, result.error_msg)
         finally:
             self._stop_robot()
-            if not best_candidates_by_track:
+            if not confirmed_candidates_by_track:
                 self._publish_target_markers([])
             if detector is not None:
                 detector.close()
