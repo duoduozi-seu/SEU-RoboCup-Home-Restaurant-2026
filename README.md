@@ -1,17 +1,21 @@
 # *SEU RoboCup@Home Restaurant 2026*
 ---
-东南大学 RoboCup@Home Restaurant 赛题代码
+Codebase for the SEU RoboCup@Home Restaurant task.
 
-- 代码作者：东南大学自动化学院机器人工程系 周艺舵
-- 开发基础环境：Ubuntu 20.04 + ROS Noetic
+- Author: Yiduo Zhou, Department of Robotics Engineering, School of Automation, Southeast University
+- Development environment: Ubuntu 20.04 + ROS Noetic
 
-## 项目概览
+## Overview
 
-本仓库面向 RoboCup@Home Restaurant 赛题，核心流程覆盖挥手找客、导航接近、桌边点单、语音播报、订单解析和返回交付。
+This repository is designed for the RoboCup@Home Restaurant task. The core workflow covers waving customer detection, navigation and approach, tableside ordering, voice announcements, order parsing, and return delivery.
 
-## 快速启动
+## News
 
-先在工作区根目录完成编译：
+- We won the RoboCup@Home China Open 2026 championship in Shunyi, Beijing.
+
+## Quick Start
+
+Build the workspace from the workspace root:
 
 ```bash
 cd /home/duo/GPSR_ws_zyd/catkin_robocup_2
@@ -20,59 +24,59 @@ catkin_make
 source devel/setup.bash
 ```
 
-比赛运行时，建议按下面顺序启动：
+During competition runs, start the system in the following order:
 
-终端 1：启动底盘与导航底层（上游 `tracer_nav`）
+Terminal 1: start the chassis and low-level navigation stack from upstream `tracer_nav`.
 
 ```bash
 roslaunch tracer_nav nav_all.launch
 ```
 
-终端 2：启动 `task_nav` 服务端
+Terminal 2: start the `task_nav` server.
 
 ```bash
 rosrun tracer_nav task_nav_server.py
 ```
 
-终端 3：启动 Restaurant 全流程
+Terminal 3: start the full Restaurant pipeline.
 
 ```bash
 roslaunch seu_restaurant_smach init.launch
 ```
 
-## 模块说明
+## Modules
 
-| 模块 | 作用 |
+| Module | Description |
 | --- | --- |
-| `seu_restaurant_msgs` | Restaurant 任务公共 Action 接口定义 |
-| `seu_restaurant_wave` | 挥手顾客搜索与目标坐标输出 |
-| `seu_restaurant_interaction` | 桌边对齐、问单、ASR 与 LLM 联动 |
-| `seu_restaurant_order_llm` | 英文订单句子的物品抽取 |
-| `seu_voice` | 基于 Piper 的离线 TTS 服务 |
-| `seu_speech_recognition` | 基于 Whisper 的语音识别服务 |
-| `seu_nav` | 对接底层导航系统的餐厅导航 Action 包装层 |
-| `seu_restaurant_smach` | 主状态机与全流程调度入口 |
+| `seu_restaurant_msgs` | Shared Action interface definitions for the Restaurant task |
+| `seu_restaurant_wave` | Waving customer search and target coordinate output |
+| `seu_restaurant_interaction` | Tableside alignment, order taking, ASR, and LLM integration |
+| `seu_restaurant_order_llm` | Item extraction from English order sentences |
+| `seu_voice` | Offline TTS service based on Piper |
+| `seu_speech_recognition` | Speech recognition service based on Whisper |
+| `seu_nav` | Restaurant navigation Action wrapper connected to the low-level navigation system |
+| `seu_restaurant_smach` | Main state machine and full workflow scheduler |
 
-## 常改位置
+## Commonly Edited Files
 
-| 位置 | 说明 |
+| Path | Description |
 | --- | --- |
-| `seu_restaurant_smach/launch/init.launch` | 全模块 bringup 入口 |
-| `seu_restaurant_smach/scripts/restaurant_smach.py` | 主流程顺序、超时和播报文案 |
-| `seu_restaurant_wave/scripts/wave_detector_core.py` | 挥手检测模型路径与阈值 |
-| `seu_restaurant_order_llm/scripts/restaurant_order_llm_action_server.py` | LLM 模型与 prompt |
-| `seu_speech_recognition/scripts/config.py` | 语音模型和音频路径 |
-| `seu_voice/launch/voice_service.launch` | TTS 模型、播放命令和服务参数 |
+| `seu_restaurant_smach/launch/init.launch` | Bringup entry point for all modules |
+| `seu_restaurant_smach/scripts/restaurant_smach.py` | Main workflow order, timeouts, and spoken prompts |
+| `seu_restaurant_wave/scripts/wave_detector_core.py` | Waving detection model path and thresholds |
+| `seu_restaurant_order_llm/scripts/restaurant_order_llm_action_server.py` | LLM model and prompt |
+| `seu_speech_recognition/scripts/config.py` | Speech model and audio paths |
+| `seu_voice/launch/voice_service.launch` | TTS model, playback command, and service parameters |
 
-## 技术栈 / Pipeline
+## Tech Stack / Pipeline
 
-- 基础框架：ROS Noetic、SMACH、ActionLib、ROS Service
-- 视觉感知：RealSense + YOLO Pose
-- 语音模块：Piper TTS + Whisper ASR
-- 语言理解：Gemini 订单物品抽取
-- 任务链路：挥手找客 -> 导航接近 -> 桌边对齐 -> 语音接单 -> LLM 解析 -> 回吧台播报 -> 返回顾客交付
+- Core framework: ROS Noetic, SMACH, ActionLib, ROS Service
+- Visual perception: RealSense + YOLO Pose
+- Speech modules: Piper TTS + Whisper ASR
+- Language understanding: Gemini-based order item extraction
+- Task pipeline: waving customer detection -> navigation and approach -> tableside alignment -> voice order taking -> LLM parsing -> return to the bar counter for announcement -> return to the customer for delivery
 
-各子模块的具体用法、变量位置和调试命令，见对应包内 `README.md`。
+For detailed usage, variable locations, and debugging commands, see the `README.md` files in the corresponding packages.
 
 ---
 *SEU RoboCup Team 2026*
